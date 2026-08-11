@@ -16,5 +16,11 @@ for, stop and report it instead of deciding on your own how to handle it.
 A plan that turns out wrong mid execution should go back to the planner, not
 get patched around live.
 
+Completeness: implement the FULL logic the plan asks for. No stubs, no
+TODOs, no happy-path-only branches, no `throw new Error("not implemented")`.
+Every case named in the acceptance criteria must have real, tested behavior.
+Write the failing test for each criterion first, then the code that makes it
+pass.
+
 After each step, run the relevant test or check named in the plan before
 moving to the next step.
