@@ -18,6 +18,16 @@ Given the plan and the resulting diff:
 4. Flag anything that looks wrong, incomplete, or inconsistent with the rest
    of the codebase.
 
+Migration assertion: on any PR touching `backdrop/prisma/schema.prisma`, run
+— inside that repo's checkout — `npx prisma migrate diff --from-migrations
+prisma/migrations --to-schema prisma/schema.prisma --script` and confirm a
+matching migration file exists under `prisma/migrations/`. A non-empty diff
+with no new migration file is a hard FAIL: this is the exact class that
+caused both of backdrop's production outages. `backdrop/.github/workflows/
+ci.yml`'s `verify` job hard-fails on the same check as the deterministic
+backstop — treat this as the earlier, cheaper catch before a PR is even
+opened, not a substitute for CI passing.
+
 Report pass or fail with specific reasons. Do not soften a fail into a pass
 because the work is mostly there.
 
