@@ -31,6 +31,15 @@ step is where most wasted fix cycles get caught before they happen. (The
 adversary role and its trigger conditions land in Phase 0c — see
 `BUILD_PLAN.md`.)
 
+## Agent width
+Default agent width is 1. Widen a role only by its trigger — see
+`BUILD_PLAN.md` §2 for the per-role table and what triggers each one. Read-
+only roles (Explorer, Critic, Adversary, Council) may fan out freely, since
+they don't write and so can't collide. Write roles (Planner, Executor) fan
+out only their *thinking* — parallel approaches, or parallel worktree-
+isolated chunks — and funnel the actual writes through worktree isolation, a
+merge step, and the gate. Widen on risk or size, never by default.
+
 ## Scope
 One PR fixes one issue. Never open a PR titled "fix N issues" or "revamp." A
 PR that touches a schema file changes **only** that schema concern. Hard cap:
