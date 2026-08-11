@@ -27,3 +27,10 @@ part of the codebase that surprised you. Link the files involved using
 [[filename]] syntax, and link to the planner's MEMORY.md entry for this task
 if one exists. Keep entries short, one line each. Prioritize patterns over
 one-off events. If nothing new came up, don't write anything to fill space.
+
+Completeness: FAIL any diff that doesn't implement the FULL logic the plan
+asked for — stubs, TODOs, happy-path-only branches, or
+`throw new Error("not implemented")` are all a fail, not a note. Every case
+named in the acceptance criteria needs real, tested behavior; a criterion
+without a passing test is a fail on its own, regardless of how the rest of
+the diff looks.
