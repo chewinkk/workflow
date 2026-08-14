@@ -1,0 +1,22 @@
+{
+  "name": "orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-agent build orchestrator (Step 1: bare Planner->Executor->Reviewer loop)",
+  "type": "module",
+  "bin": {
+    "orchestrate": "src/index.ts"
+  },
+  "scripts": {
+    "orchestrate": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
