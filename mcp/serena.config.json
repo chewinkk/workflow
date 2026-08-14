@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": [
+        "--from", "serena-agent", "serena", "start-mcp-server",
+        "--project", "/home/user/workflow",
+        "--context", "agent",
+        "--transport", "stdio",
+        "--enable-web-dashboard", "false",
+        "--enable-gui-log-window", "false",
+        "--log-level", "ERROR"
+      ]
+    }
+  }
+}

@@ -6,11 +6,11 @@
 // as later steps hire them.
 
 export type Role =
+  | "explorer"
   | "planner"
   | "executor"
   | "reviewer";
   // Later steps (kept here as the §8 map, wired when their step lands):
-  // | "explorer"      // Haiku
   // | "frontend"      // Sonnet 5
   // | "backend"       // Sonnet 5
   // | "security"      // Opus 4.8
@@ -23,6 +23,8 @@ export type Role =
 
 // Concrete model ids handed to the `claude` CLI.
 export const MODELS: Record<Role, string> = {
+  // §8: Explorer -> Haiku (cheap, reads the graph).
+  explorer: "claude-haiku-4-5-20251001",
   // §8: Planner -> Opus 4.8 (or Fable 5 for the hardest plans).
   planner: "claude-opus-4-8",
   // §8: Executor / most specialists -> Sonnet 5.

@@ -1,19 +1,16 @@
-// Reviewer stage (spec §1 pipeline). Receives the Executor's change-summary and
-// the original goal, and issues a verdict. In Step 1 the Reviewer only *reads*
-// and reports (it does NOT run the code yet — that verification loop is Step 3).
+// Reviewer stage (spec §1). Reads `goal` + `done` from the store and issues a
+// verdict. Model: Opus 4.8 (§8). Still Step 1/2 semantics: it reads and reports
+// only — it does NOT run the code (that verification loop is Step 3).
 
 import { runAgent, type AgentResult } from "../runner.js";
 import { modelFor } from "../models.js";
 
-export function review(
-  goalAndConstraints: string,
-  changeSummaryFromExecutor: string
-): Promise<AgentResult> {
-  const input =
-    `Review the Executor's work against the original goal.\n\n` +
-    `=== GOAL ===\n${goalAndConstraints}\n=== END GOAL ===\n\n` +
-    `=== EXECUTOR CHANGE-SUMMARY ===\n${changeSummaryFromExecutor}\n` +
-    `=== END CHANGE-SUMMARY ===\n\n` +
-    `Produce your verdict now.`;
-  return runAgent("reviewer", modelFor("reviewer"), input);
+export function review(): Promise<AgentResult> {
+  const directive =
+    "You are the Reviewer. " +
+    "1) Read the memory named `goal` and the memory named `done`. " +
+    "2) Judge whether the Executor's work satisfies the goal and acceptance criteria. " +
+    "3) State your verdict (PASS / BOUNCE-BACK / ESCALATE) in your text output. " +
+    "In this step you only read and report — do NOT run the code (that is Step 3).";
+  return runAgent("reviewer", modelFor("reviewer"), directive);
 }

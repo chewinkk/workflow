@@ -2,3 +2,7 @@ node_modules/
 .env
 *.log
 dist/
+
+# Serena working dir: runtime store (job memories), cache, machine-local project
+# config. The committed source of truth for Serena wiring is mcp/serena.config.json.
+.serena/
