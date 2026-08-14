@@ -6,3 +6,6 @@ dist/
 # Serena working dir: runtime store (job memories), cache, machine-local project
 # config. The committed source of truth for Serena wiring is mcp/serena.config.json.
 .serena/
+
+# Workspace: where the Executor writes the app under construction (runtime output).
+workspace/

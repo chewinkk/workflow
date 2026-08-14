@@ -19,7 +19,13 @@ before adding the next.
   `done`, `blocked`) via Serena MCP instead of passing raw text hand-to-hand.
   *Gate: the Executor pulls `plan` from the store and re-derives nothing —
   proven by logging every tool each agent actually calls.*
-- ⬜ Step 3 — Verification (Reviewer runs the code)
+- ✅ **Step 3 — Verification (§7).** The Executor writes REAL files to a
+  gitignored `workspace/`; `src/verify/build-test-fix.ts` actually runs the
+  code (real `tsc` build + `node --test`), and on failure bounces the real
+  stderr back to an Executor-fix pass that edits the files, then re-runs —
+  escalating to the Planner after `MAX_BOUNCES`.
+  *Gate: a deliberately broken build (`--seed-break`) is caught from real
+  stderr and fixed with no human help; the re-run goes green.*
 - ⬜ Step 4 — Fan-out + Reconciler
 - ⬜ Step 5 — LLM Council
 - ⬜ Step 6 — Railway deploy
@@ -29,6 +35,8 @@ before adding the next.
 ```bash
 npm install
 npm run orchestrate -- build jobs/liquid-glass-auth.yaml
+# prove the Step 3 verification loop by injecting a deliberate build break:
+npm run orchestrate -- build jobs/liquid-glass-auth.yaml --seed-break
 ```
 
 Each pipeline role runs as a headless `claude` call: its system prompt is the
@@ -60,8 +68,13 @@ src/
   store/
     schema.ts         the five slices + who reads/writes each (§3)
     client.ts         thin Serena-backed store client (orchestrator side)
+  verify/
+    build-test-fix.ts real build+test loop; bounces real stderr to the Executor (§7)
+    gates.ts          workspace build config + recursive .ts discovery
+    seed-break.ts     deliberate fault injection for the Step 3 gate
   pipeline/{explorer,planner,executor,reviewer}.ts
 agents/{explorer,planner,executor,reviewer}.md   agent prompts (plain, deletable)
 mcp/serena.config.json                           Serena MCP server wiring
 jobs/liquid-glass-auth.yaml                       the first job
+workspace/                                        (gitignored) where the Executor builds
 ```

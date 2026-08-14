@@ -1,28 +1,53 @@
-// Executor stage (spec §1). Reads `plan` from the store and writes `done`.
-// Model: Sonnet 5 (§8).
+// Executor stage (spec §1, now §7). In Step 3 the Executor writes REAL files to
+// the workspace and, when the verifier bounces a failure back, edits them to fix
+// it. Model: Sonnet 5 (§8).
 //
-// THIS STAGE IS THE STEP 2 GATE. The Executor is deliberately GRANTED repo-read
-// tools (Read/Glob/Grep) so that declining to use them is a real, observed
-// result — not something made structurally impossible. The wiring is correct
-// iff the Executor pulls everything it needs from the `plan` memory and does
-// NOT read the `explored` memory nor re-open repo files.
+// Two modes:
+//   buildToDisk() — read `plan` from the store, materialize it as real files.
+//   fixOnDisk()   — given a real build/test error, make the minimal edit to fix.
 
 import { runAgent, type AgentResult } from "../runner.js";
 import { modelFor } from "../models.js";
+import { WORKSPACE_SRC } from "../verify/gates.js";
 
-export function execute(): Promise<AgentResult> {
+const FILE_TOOLS = ["Write", "Edit", "MultiEdit", "Read", "Glob", "Grep"];
+
+export function buildToDisk(): Promise<AgentResult> {
   const directive =
-    "You are the Executor. " +
-    "1) Read the memory named `plan`. That plan is self-contained. " +
-    "2) Produce a concrete change-summary describing exactly what you would " +
-    "implement for each plan step (files, contents, why). This step of the " +
-    "orchestrator build is a text-artifact stage — do NOT actually create/edit " +
-    "files or run shell commands (real file-writing + running is Step 3). " +
-    "Do NOT read the `explored` memory and do NOT re-survey the repository — " +
-    "everything you need is in `plan`; re-deriving it wastes tokens. " +
-    "3) Call write_memory to store your change-summary in the memory named `done`.";
-  return runAgent("executor", modelFor("executor"), directive, {
-    // Granted on purpose — the gate proves they go UNUSED.
-    extraTools: ["Read", "Glob", "Grep"],
-  });
+    "You are the Executor. Materialize the plan as REAL files on disk.\n" +
+    "1) Read the memory named `plan`. It is self-contained — do NOT read `explored` " +
+    "or re-survey the repo.\n" +
+    `2) Write the implementation as real files under ${WORKSPACE_SRC}/ (use absolute paths). ` +
+    "Constraints that keep it buildable in this environment:\n" +
+    "   - Pure TypeScript only. NO native/native-addon deps (no argon2, no better-sqlite3, no bcrypt). " +
+    "Use Node's built-in `node:crypto` (e.g. scryptSync for hashing, randomBytes + hmac for sessions) " +
+    "and an in-memory store. This is the buildable auth-core slice of the job.\n" +
+    "   - Every local import must use an explicit `.ts` extension (e.g. `./auth.ts`).\n" +
+    "   - Provide at least one unit test file named `*.test.ts` under that dir using `node:test` + " +
+    "`node:assert/strict`, covering signup/login/session round-trips including a wrong-password case.\n" +
+    "   - Do NOT create or edit any tsconfig.json — the build config is provisioned for you.\n" +
+    "3) Call write_memory to store a concise change-summary in the memory named `done` " +
+    "(list each file you wrote and why).";
+  return runAgent("executor", modelFor("executor"), directive, { extraTools: FILE_TOOLS });
+}
+
+export interface FixResult {
+  summary: string;
+}
+
+// Called by the verifier with the REAL stderr from a failed build/test.
+export async function fixOnDisk(phase: "build" | "test", errorText: string): Promise<FixResult> {
+  const directive =
+    `You are the Executor in fix mode. The ${phase} just FAILED with this real error:\n\n` +
+    "```\n" +
+    errorText +
+    "\n```\n\n" +
+    `The code lives under ${WORKSPACE_SRC}/. ` +
+    "1) Read the offending file(s) named in the error. " +
+    "2) Make the MINIMAL edit that fixes this specific failure — do not rewrite unrelated code, " +
+    "do not touch tsconfig.json. " +
+    "3) Reply with one line naming the file(s) you edited and what you changed. " +
+    "Do not call write_memory; just fix the files.";
+  const r = await runAgent("executor", modelFor("executor"), directive, { extraTools: FILE_TOOLS });
+  return { summary: r.output.replace(/\s+/g, " ").slice(0, 200) || "(no summary)" };
 }

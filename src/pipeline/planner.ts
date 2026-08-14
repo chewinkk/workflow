@@ -15,3 +15,20 @@ export function plan(): Promise<AgentResult> {
     "3) Call write_memory to store it in the memory named `plan`. Do not write any other memory.";
   return runAgent("planner", modelFor("planner"), directive);
 }
+
+// Escalation target (spec §7.4): the verifier calls this after MAX_BOUNCES failed
+// Executor fixes. The Planner revises `plan` in light of the persistent failure
+// and records the blockage.
+export function replan(persistentError: string): Promise<AgentResult> {
+  const directive =
+    "You are the Planner, called to ESCALATE. The Executor could not make the build/tests pass " +
+    "after repeated fix attempts. The persistent error is:\n\n" +
+    "```\n" +
+    persistentError +
+    "\n```\n\n" +
+    "1) Read the memory named `plan`. " +
+    "2) Revise it to route around this failure (different approach/deps/structure), and call " +
+    "write_memory to store the revised plan back in `plan`. " +
+    "3) Call write_memory to record the escalation and its cause in the memory named `blocked`.";
+  return runAgent("planner", modelFor("planner"), directive);
+}
