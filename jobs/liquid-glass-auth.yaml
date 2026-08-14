@@ -1,0 +1,11 @@
+goal: >
+  Build a login + signup screen with a liquid-glass aesthetic that is NOT laggy.
+constraints:
+  - "Frosted/liquid-glass visual treatment (the taste + impeccable skills own this)."
+  - "Real auth backend (not a mock) — signup, login, session."
+  - "Performance is an acceptance criterion, not an afterthought: interactions and animation must stay smooth (measure frame timing)."
+acceptance:
+  - "Screen renders and is visually polished (taste/impeccable/a11y pass)."
+  - "Signup and login work against the backend end to end."
+  - "No jank: animation holds frame budget under interaction."
+council: true   # convene the Council on the plan once, to exercise Step 5
