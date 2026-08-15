@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "bash",
+      "args": [
+        "bin/serena-mcp.sh",
+        "--context", "agent",
+        "--transport", "stdio",
+        "--enable-web-dashboard", "false",
+        "--enable-gui-log-window", "false",
+        "--log-level", "ERROR"
+      ]
+    }
+  }
+}

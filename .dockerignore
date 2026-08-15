@@ -1,0 +1,8 @@
+# Keep the image lean and avoid shipping runtime state into the build.
+node_modules
+.git
+.serena
+workspace
+dist
+*.log
+.env

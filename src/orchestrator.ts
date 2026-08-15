@@ -1,16 +1,24 @@
-// Top-level orchestrator loop (spec §2 src/orchestrator.ts). Owns the run.
+// Top-level orchestrator loop (spec §2).
 //
-// Step 1 scope: the bare pipeline Planner -> Executor -> Reviewer, one model
-// each, NO shared store, NO swarm, NO council, NO verification loop. The whole
-// point of Step 1 is to prove the plumbing: an agent finishes, hands off, and
-// the next one picks up. So this file logs each handoff explicitly.
+// Step 5 scope: adds the LLM COUNCIL (§6). When a plan is consequential (here:
+// the job sets council:true), the Council convenes ON the plan: four critics
+// (Contrarian, First-Principles, Expansionist, Outsider) fire in parallel with
+// fresh context, blind to each other; then a Judge runs last with all four
+// verdicts and RULES — no hedging — writing the revised plan back to the store.
+//
+// This run demonstrates the Council gate (a real ruling that changes the plan).
+// The Step 3 verification loop and the Step 4 swarm remain in the codebase and
+// are re-composed in a later integration pass; they are not exercised in this
+// focused Step 5 demonstration.
 
 import { readFileSync } from "node:fs";
 import { load } from "js-yaml";
+import { explore } from "./pipeline/explorer.js";
 import { plan } from "./pipeline/planner.js";
-import { execute } from "./pipeline/executor.js";
-import { review } from "./pipeline/reviewer.js";
-import type { AgentResult } from "./runner.js";
+import type { AgentResult, ToolCall } from "./runner.js";
+import { SLICES, type Slice } from "./store/schema.js";
+import { writeSlice, readSlice, resetJobSlices } from "./store/client.js";
+import { runCouncil } from "./council/council.js";
 
 interface Job {
   goal: string;
@@ -19,16 +27,17 @@ interface Job {
   council?: boolean;
 }
 
+export interface RunOptions {
+  seedBreak?: boolean;
+  forceDivergence?: boolean; // Step 4 swarm option (kept for that code path)
+}
+
 function loadJob(path: string): Job {
-  const raw = readFileSync(path, "utf8");
-  const job = load(raw) as Job;
-  if (!job || typeof job.goal !== "string") {
-    throw new Error(`job file ${path} has no "goal"`);
-  }
+  const job = load(readFileSync(path, "utf8")) as Job;
+  if (!job || typeof job.goal !== "string") throw new Error(`job file ${path} has no "goal"`);
   return job;
 }
 
-// Flatten the job into the goal+constraints+acceptance string every agent sees.
 function goalText(job: Job): string {
   const lines: string[] = [`GOAL: ${job.goal.trim()}`];
   if (job.constraints?.length) {
@@ -43,69 +52,235 @@ function goalText(job: Job): string {
 }
 
 function banner(msg: string): void {
-  console.log(`\n${"─".repeat(72)}\n${msg}\n${"─".repeat(72)}`);
+  console.log(`\n${"─".repeat(74)}\n${msg}\n${"─".repeat(74)}`);
 }
 
-function handoffLog(from: AgentResult, to: string): void {
-  const preview = from.output.replace(/\s+/g, " ").slice(0, 160);
+// ---- tool-call interpretation (the observable "sources read") --------------
+
+const SLICE_SET = new Set<string>(SLICES);
+
+// Serena memory tools = the shared store. Everything else Serena exposes
+// (read_file, find_file, list_dir, get_symbols_overview, search_for_pattern,
+// find_symbol, execute_shell_command, …) is CODE/REPO interaction — the exact
+// re-derivation the store is meant to eliminate. So is Read/Glob/Grep.
+const MEMORY_TOOLS = new Set([
+  "mcp__serena__read_memory",
+  "mcp__serena__write_memory",
+  "mcp__serena__list_memories",
+  "mcp__serena__delete_memory",
+  "mcp__serena__edit_memory",
+  "mcp__serena__rename_memory",
+]);
+const NATIVE_REPO_TOOLS = new Set(["Read", "Glob", "Grep", "LS"]);
+
+function isDerivedRepoRead(tc: ToolCall): boolean {
+  if (NATIVE_REPO_TOOLS.has(tc.name)) return true;
+  // Any Serena tool that is NOT a memory tool touches code/the repo.
+  if (tc.name.startsWith("mcp__serena__") && !MEMORY_TOOLS.has(tc.name)) return true;
+  return false;
+}
+
+// Which store slice(s), if any, a tool call references (scans input values).
+function slicesReferenced(tc: ToolCall): string[] {
+  const hits = new Set<string>();
+  for (const v of Object.values(tc.input)) {
+    if (typeof v === "string") {
+      const bare = v.replace(/\.md$/, "");
+      if (SLICE_SET.has(bare)) hits.add(bare);
+    }
+  }
+  return [...hits];
+}
+
+function argHint(tc: ToolCall): string {
+  const v =
+    (tc.input.memory_name as string) ??
+    (tc.input.memory_file_name as string) ??
+    (tc.input.file_path as string) ??
+    (tc.input.relative_path as string) ??
+    (tc.input.pattern as string) ??
+    (tc.input.name_path as string) ??
+    "";
+  return v ? `(${v})` : "";
+}
+
+interface Sources {
+  storeReads: string[]; // slices read via read_memory (successful)
+  storeWrites: string[]; // slices written via write_memory (successful)
+  repoReads: string[]; // successful code/repo reads (native OR serena)
+  repoReadAttempts: string[]; // code/repo reads that were denied
+}
+
+function summarizeSources(r: AgentResult): Sources {
+  const storeReads: string[] = [];
+  const storeWrites: string[] = [];
+  const repoReads: string[] = [];
+  const repoReadAttempts: string[] = [];
+  for (const tc of r.toolCalls) {
+    if (tc.name === "mcp__serena__read_memory" && !tc.denied) {
+      for (const s of slicesReferenced(tc)) storeReads.push(s);
+    } else if (tc.name === "mcp__serena__write_memory" && !tc.denied) {
+      for (const s of slicesReferenced(tc)) storeWrites.push(s);
+    } else if (isDerivedRepoRead(tc)) {
+      const label = `${tc.name}${argHint(tc)}`;
+      (tc.denied ? repoReadAttempts : repoReads).push(label);
+    }
+  }
+  return { storeReads, storeWrites, repoReads, repoReadAttempts };
+}
+
+// Full, unabridged trace — nothing hidden. ✓ = succeeded, ✗ = denied.
+function traceLine(tc: ToolCall): string {
+  return `${tc.denied ? "✗" : "✓"} ${tc.name}${argHint(tc)}`;
+}
+
+function logSources(r: AgentResult, s: Sources): void {
   console.log(
-    `\n  ✅ ${from.role} finished  (model=${from.model}, ${from.output.length} chars, ${from.ms} ms)` +
-      `\n  🤝 handing off → ${to}` +
-      `\n     preview: ${preview}${from.output.length > 160 ? "…" : ""}`
+    `\n  ✅ ${r.role} finished  (model=${r.model}, ${r.ms} ms, ${r.toolCalls.length} tool calls)`
   );
+  console.log(`     full tool trace: ${r.toolCalls.map(traceLine).join("  ") || "(none)"}`);
+  console.log(`     SOURCES READ:`);
+  console.log(`       · store slices        : ${s.storeReads.join(", ") || "(none)"}`);
+  console.log(`       · code/repo (success) : ${s.repoReads.join(", ") || "(none)"}`);
+  if (s.repoReadAttempts.length)
+    console.log(`       · code/repo (DENIED)  : ${s.repoReadAttempts.join(", ")}`);
+  console.log(`     WROTE store slices      : ${s.storeWrites.join(", ") || "(none)"}`);
 }
 
-export async function run(jobPath: string): Promise<void> {
+// Convenience for stages whose sources we only want to display.
+function logSources2(r: AgentResult): void {
+  logSources(r, summarizeSources(r));
+}
+
+// Hedge phrases a real ruling must not contain (spec §6: the Judge must rule).
+const HEDGE_PHRASES = [
+  "on one hand",
+  "on the other hand",
+  "it depends",
+  "both are valid",
+  "both approaches are valid",
+  "split the difference",
+  "middle ground",
+  "a compromise between",
+];
+
+function hedgesFound(text: string): string[] {
+  const lc = text.toLowerCase();
+  return HEDGE_PHRASES.filter((p) => lc.includes(p));
+}
+
+// Concrete line-level edit the Council made to the plan (added / removed lines).
+function lineDiff(before: string, after: string): { added: string[]; removed: string[] } {
+  const b = new Set(before.split("\n").map((l) => l.trim()).filter(Boolean));
+  const a = new Set(after.split("\n").map((l) => l.trim()).filter(Boolean));
+  const added = [...a].filter((l) => !b.has(l));
+  const removed = [...b].filter((l) => !a.has(l));
+  return { added, removed };
+}
+
+export async function run(jobPath: string, _opts: RunOptions = {}): Promise<void> {
   const job = loadJob(jobPath);
   const goal = goalText(job);
 
-  banner(`ORCHESTRATOR — Step 1 bare loop\njob: ${jobPath}`);
-  console.log(goal);
-  if (job.council) {
-    console.log(
-      `\n  (note) job requests council:true — the Council is Step 5; not wired yet, ignored for Step 1.`
-    );
+  banner(`ORCHESTRATOR — Step 5: base loop + store + LLM Council\njob: ${jobPath}`);
+
+  resetJobSlices();
+  writeSlice("goal", goal);
+  console.log(`  seeded store slice: goal (${goal.length} chars)`);
+  console.log(`  council trigger: ${job.council ? "council:true (convene once on the plan)" : "off"}`);
+
+  // --- Stage 1: Explorer --> writes `explored` ----------------------------
+  banner("STAGE 1/3 · EXPLORER   (reads goal → writes explored)");
+  logSources2(await explore());
+
+  // --- Stage 2: Planner --> writes `plan` ---------------------------------
+  banner("STAGE 2/3 · PLANNER    (reads goal + explored → writes plan)");
+  logSources2(await plan());
+
+  if (!job.council) {
+    console.log("\n  (job did not request the Council; nothing to demonstrate for Step 5.)");
+    return;
   }
 
-  // --- Stage 1: Planner ---------------------------------------------------
-  banner("STAGE 1/3 · PLANNER");
-  console.log("  ▶ Planner picking up the goal…");
-  const planned = await plan(goal);
-  handoffLog(planned, "Executor");
+  // --- Stage 3: COUNCIL — 4 critics blind ∥, then Judge rules -------------
+  banner("STAGE 3/3 · COUNCIL    (4 critics ∥ blind → Judge rules)   ← Step 5 gate");
+  const council = await runCouncil();
 
-  // --- Stage 2: Executor (picks up the plan) ------------------------------
-  banner("STAGE 2/3 · EXECUTOR");
-  console.log("  ▶ Executor picking up the plan from the Planner…");
-  const executed = await execute(planned.output);
-  handoffLog(executed, "Reviewer");
+  console.log("\n  [CRITICS — fired in parallel, fresh context, blind to each other]");
+  for (const { role, result } of council.critics) {
+    const s = summarizeSources(result);
+    console.log(
+      `\n  🔹 ${role}  (model=${result.model}, ${result.ms} ms) — read: ${s.storeReads.join(", ") || "(none)"}, wrote: ${s.storeWrites.join(", ") || "(none)"}`
+    );
+    console.log("     verdict:\n" + indent(result.output));
+  }
 
-  // --- Stage 3: Reviewer (picks up the executor's work) -------------------
-  banner("STAGE 3/3 · REVIEWER");
-  console.log("  ▶ Reviewer picking up the Executor's change-summary…");
-  const reviewed = await review(goal, executed.output);
+  console.log("\n  [JUDGE — ran last with all four verdicts]");
+  const js = summarizeSources(council.judge);
   console.log(
-    `\n  ✅ Reviewer finished  (model=${reviewed.model}, ${reviewed.output.length} chars, ${reviewed.ms} ms)`
+    `  ⚖️  judge  (model=${council.judge.model}, ${council.judge.ms} ms) — read: ${js.storeReads.join(", ") || "(none)"}, wrote: ${js.storeWrites.join(", ") || "(none)"}`
   );
+  console.log("\n── JUDGE RULING (`council` slice) ──\n" + (readSlice("council")?.trim() || "(empty)"));
 
-  // --- Gate report --------------------------------------------------------
-  banner("STEP 1 GATE — did the baton pass end to end?");
-  const passed =
-    planned.output.length > 0 &&
-    executed.output.length > 0 &&
-    reviewed.output.length > 0;
-  console.log(
-    `  Planner → Executor handoff:  ${planned.output.length > 0 ? "PASS" : "FAIL"}\n` +
-      `  Executor → Reviewer handoff: ${executed.output.length > 0 ? "PASS" : "FAIL"}\n` +
-      `  Reviewer produced verdict:   ${reviewed.output.length > 0 ? "PASS" : "FAIL"}\n`
-  );
-  console.log(
-    passed
-      ? "  ✅ STEP 1 GATE PASSED — each agent finished, handed off, and the next picked up."
-      : "  ❌ STEP 1 GATE FAILED — a handoff produced no output."
-  );
+  const diff = lineDiff(council.planBefore, council.planAfter);
+  banner("THE EDIT TO THE PLAN (before → after)");
+  console.log(`  plan: ${council.planBefore.length} chars → ${council.planAfter.length} chars`);
+  console.log(`  lines removed by the ruling: ${diff.removed.length}, lines added: ${diff.added.length}`);
+  console.log("\n  + ADDED (sample):");
+  for (const l of diff.added.slice(0, 12)) console.log(`    + ${l.slice(0, 160)}`);
+  if (diff.removed.length) {
+    console.log("\n  - REMOVED (sample):");
+    for (const l of diff.removed.slice(0, 6)) console.log(`    - ${l.slice(0, 160)}`);
+  }
 
-  banner("REVIEWER VERDICT (full)");
-  console.log(reviewed.output);
+  // --- Store contents after the run ---------------------------------------
+  banner("SHARED STORE after run (Serena memories)");
+  for (const s of SLICES) {
+    const len = readSlice(s as Slice)?.trim().length ?? 0;
+    console.log(`  ${s.padEnd(11)} : ${len > 0 ? `${len} chars` : "(empty)"}`);
+  }
+
+  // --- STEP 5 GATE --------------------------------------------------------
+  banner("STEP 5 GATE — did the Council produce a real ruling that changes the plan?");
+
+  const ruling = readSlice("council") ?? "";
+  const allCriticsSpoke = council.critics.every((c) => c.result.output.trim().length > 0);
+  const criticsBlind = council.critics.every((c) => {
+    const reads = summarizeSources(c.result).storeReads;
+    return reads.every((r) => r === "goal" || r === "plan"); // saw only the plan + goal
+  });
+  const criticsWroteNothing = council.critics.every(
+    (c) => summarizeSources(c.result).storeWrites.length === 0
+  );
+  const judgeRuled = /RULING:/i.test(ruling);
+  const hedges = hedgesFound(ruling);
+  const planChanged =
+    council.planAfter.trim().length > 0 && council.planAfter.trim() !== council.planBefore.trim();
+
+  const checks: [string, boolean][] = [
+    ["All four critics produced a verdict", allCriticsSpoke],
+    ["Critics were BLIND (each read only goal+plan, wrote nothing)", criticsBlind && criticsWroteNothing],
+    ["Judge issued a RULING (not a summary)", judgeRuled],
+    [`Judge did NOT hedge (${hedges.length ? "found: " + hedges.join(", ") : "no hedge phrases"})`, hedges.length === 0],
+    ["The ruling CHANGED the plan slice", planChanged],
+  ];
+  for (const [label, ok] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
+
+  const passed = checks.every(([, ok]) => ok);
+  console.log(
+    "\n" +
+      (passed
+        ? "  ✅ STEP 5 GATE PASSED — four blind critics, a Judge that ruled without hedging,\n" +
+          "     and a plan that actually changed as a result."
+        : "  ❌ STEP 5 GATE FAILED — see FAILs above.")
+  );
 
   if (!passed) process.exitCode = 1;
+}
+
+function indent(s: string): string {
+  return s
+    .split("\n")
+    .map((l) => `       ${l}`)
+    .join("\n");
 }
