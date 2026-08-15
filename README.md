@@ -36,7 +36,15 @@ before adding the next.
   *Gate: the Reconciler catches a real payload-contract seam no single-side
   reviewer could — natural divergence when it arises, else a `--diverge`
   fallback injects one.*
-- ⬜ Step 5 — LLM Council
+- ✅ **Step 5 — LLM Council (§6).** When a plan is consequential (`council:true`),
+  four critics (Contrarian, First-Principles, Expansionist, Outsider) fire in
+  parallel with fresh context, **blind to each other**, all reading only
+  `goal`+`plan`; the **Judge** (Opus 4.8) runs last with all four verdicts and
+  **rules without hedging**, writing its ruling to `council` and the revised
+  plan back to `plan`. Fresh `.md` prompts under `src/council/roles/` — not
+  roster hires. Critics: Sonnet 5.
+  *Gate: the Council produces a real ruling that changes the plan slice and the
+  Judge doesn't split the difference.*
 - ⬜ Step 6 — Railway deploy
 
 ## Run it
@@ -84,6 +92,9 @@ src/
   swarm/
     fanout.ts         blind parallel Frontend/Backend specialists (§6/§2)
     reconciler.ts     integration pass; flags payload-contract seams
+  council/
+    council.ts        4 blind critics ∥ + a Judge that rules (§6)
+    roles/*.md        Contrarian, First-Principles, Expansionist, Outsider, Judge
   pipeline/{explorer,planner,executor,reviewer}.ts
 agents/{explorer,planner,executor,reviewer}.md   pipeline agent prompts (plain, deletable)
 agents/roster/*.md                               vendored agency-agents personalities (§5)
