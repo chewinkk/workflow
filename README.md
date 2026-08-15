@@ -26,7 +26,16 @@ before adding the next.
   escalating to the Planner after `MAX_BOUNCES`.
   *Gate: a deliberately broken build (`--seed-break`) is caught from real
   stderr and fixed with no human help; the re-run goes green.*
-- ⬜ Step 4 — Fan-out + Reconciler
+- ✅ **Step 4 — Fan-out + Reconciler (§6/§2).** After the Planner the pipeline
+  fans out into **Frontend** + **Backend** specialists (agency-agents roster
+  personalities, vendored under `agents/roster/`) running in parallel and
+  **blind** — each reads only `goal`+`plan`, builds its half to
+  `workspace/{client,server}`, and declares its own auth payload contract into
+  its slice. The **Reconciler** (`engineering-senior-developer`) reads both and
+  flags the seams.
+  *Gate: the Reconciler catches a real payload-contract seam no single-side
+  reviewer could — natural divergence when it arises, else a `--diverge`
+  fallback injects one.*
 - ⬜ Step 5 — LLM Council
 - ⬜ Step 6 — Railway deploy
 
@@ -72,9 +81,23 @@ src/
     build-test-fix.ts real build+test loop; bounces real stderr to the Executor (§7)
     gates.ts          workspace build config + recursive .ts discovery
     seed-break.ts     deliberate fault injection for the Step 3 gate
+  swarm/
+    fanout.ts         blind parallel Frontend/Backend specialists (§6/§2)
+    reconciler.ts     integration pass; flags payload-contract seams
   pipeline/{explorer,planner,executor,reviewer}.ts
-agents/{explorer,planner,executor,reviewer}.md   agent prompts (plain, deletable)
+agents/{explorer,planner,executor,reviewer}.md   pipeline agent prompts (plain, deletable)
+agents/roster/*.md                               vendored agency-agents personalities (§5)
 mcp/serena.config.json                           Serena MCP server wiring
 jobs/liquid-glass-auth.yaml                       the first job
-workspace/                                        (gitignored) where the Executor builds
+workspace/                                        (gitignored) where specialists build
 ```
+
+### Note on the §5 roster
+
+Half of the agent names in the spec's §5 don't exist in the real `agency-agents`
+roster (they were written from design notes). Every hire is verified against the
+cloned roster before use; confirmed substitutions so far:
+`minimal-change-engineer`→`engineering-senior-developer`,
+`specialized-codebase-archaeologist` (Reconciler)→`engineering-senior-developer`.
+The npm `agency-agents` package is an empty stub — the roster lives in the
+GitHub repo (`git clone`, then copy `.md` files).
