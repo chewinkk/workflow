@@ -1,27 +1,26 @@
 // Top-level orchestrator loop (spec §2).
 //
-// Step 3 scope: adds VERIFICATION (§7). The Executor now writes REAL files to
-// the workspace; the verifier actually RUNS them (build + test) and closes a
-// build-test-fix loop — a real failure bounces the real stderr back to the
-// Executor, which edits the files; re-run; escalate to the Planner after N.
-// Still NO swarm or council (Steps 4-5).
+// Step 4 scope: adds the SWARM (§6/§2). After the Planner, the single Executor
+// role fans out into Frontend + Backend specialists running in PARALLEL and
+// BLIND (each reads only goal+plan, never the other's slice), then a Reconciler
+// integrates and flags the seams between them. Still NO council (Step 5).
 //
-// Carried forward from Step 2: the store-mediated handoff and the tool-trace
-// logging that proves the Executor pulls `plan` from the store.
+// This run demonstrates the swarm gate (Reconciler catches an integration seam).
+// The Step 3 verification loop remains in the codebase (src/verify/) and is
+// re-composed with the swarm in a later integration pass; it is not exercised in
+// this focused Step 4 demonstration.
 
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { load } from "js-yaml";
 import { explore } from "./pipeline/explorer.js";
 import { plan } from "./pipeline/planner.js";
-import { buildToDisk } from "./pipeline/executor.js";
-import { review } from "./pipeline/reviewer.js";
 import type { AgentResult, ToolCall } from "./runner.js";
 import { SLICES, type Slice } from "./store/schema.js";
 import { writeSlice, readSlice, resetJobSlices } from "./store/client.js";
-import { buildTestFix } from "./verify/build-test-fix.js";
-import { seedBreak } from "./verify/seed-break.js";
-import { WORKSPACE_DIR, WORKSPACE_SRC, WORKSPACE_TSCONFIG, walkWorkspaceTs } from "./verify/gates.js";
-import { join, relative } from "node:path";
+import { WORKSPACE_DIR, WORKSPACE_SRC, WORKSPACE_TSCONFIG } from "./verify/gates.js";
+import { runFanout, runBackend } from "./swarm/fanout.js";
+import { reconcile } from "./swarm/reconciler.js";
+import { join } from "node:path";
 
 interface Job {
   goal: string;
@@ -32,7 +31,16 @@ interface Job {
 
 export interface RunOptions {
   seedBreak?: boolean;
+  forceDivergence?: boolean; // skip the natural attempt; inject the seam directly
 }
+
+// The deliberate divergence used only as a fallback if the blind specialists
+// happen to agree — a real, specific contract mismatch for the Reconciler to catch.
+const BACKEND_DIVERGENCE =
+  "- Use the field name `username` (NOT `email`) in request bodies.\n" +
+  "- Return the session as a bearer token in the JSON response body (NOT an httpOnly cookie).\n" +
+  "- Mount endpoints under `/auth/*` (e.g. POST /auth/register, POST /auth/signin).\n" +
+  "- On bad credentials return HTTP 422 (NOT 401).";
 
 function loadJob(path: string): Job {
   const job = load(readFileSync(path, "utf8")) as Job;
@@ -155,102 +163,124 @@ function logSources2(r: AgentResult): void {
 }
 
 function provisionWorkspace(): void {
-  // Fresh workspace each run so the Executor builds from scratch.
+  // Fresh workspace each run so the specialists build from scratch.
   rmSync(WORKSPACE_DIR, { recursive: true, force: true });
   mkdirSync(WORKSPACE_SRC, { recursive: true });
-  // The build system is a harness-provided given (not the Executor's job).
   writeFileSync(join(WORKSPACE_DIR, "tsconfig.json"), WORKSPACE_TSCONFIG, "utf8");
 }
 
-function workspaceFiles(): string[] {
-  return walkWorkspaceTs().map((f) => relative(WORKSPACE_SRC, f));
+// Pull the AUTH PAYLOAD CONTRACT block out of a specialist's slice for display.
+function extractContract(slice: string | null): string {
+  if (!slice) return "(no slice)";
+  const m = slice.match(/=== AUTH PAYLOAD CONTRACT ===([\s\S]*?)=== END CONTRACT ===/);
+  return m ? m[1].trim() : "(no contract block found)";
+}
+
+// Parse the Reconciler's machine-readable seam count.
+function parseSeamCount(reconciled: string | null): number {
+  const m = reconciled?.match(/SEAMS_FOUND:\s*(\d+)/i);
+  return m ? parseInt(m[1], 10) : -1;
 }
 
 export async function run(jobPath: string, opts: RunOptions = {}): Promise<void> {
   const job = loadJob(jobPath);
   const goal = goalText(job);
 
-  banner(`ORCHESTRATOR — Step 3: base loop + shared store + verification\njob: ${jobPath}`);
+  banner(`ORCHESTRATOR — Step 4: base loop + store + swarm (fan-out + Reconciler)\njob: ${jobPath}`);
 
   resetJobSlices();
   writeSlice("goal", goal);
   provisionWorkspace();
   console.log(`  seeded store slice: goal (${goal.length} chars)`);
-  console.log(`  provisioned workspace: ${WORKSPACE_DIR} (+ tsconfig)`);
-  console.log(`  seed-break: ${opts.seedBreak ? "ON (a deliberate break will be injected)" : "off"}`);
-  if (job.council) console.log(`  (note) council:true is Step 5 — not wired yet, ignored for Step 3.`);
+  console.log(`  provisioned workspace: ${WORKSPACE_DIR}/{client,server}`);
+  if (job.council) console.log(`  (note) council:true is Step 5 — not wired yet, ignored for Step 4.`);
 
   // --- Stage 1: Explorer --> writes `explored` ----------------------------
-  banner("STAGE 1/5 · EXPLORER   (reads goal → writes explored)");
+  banner("STAGE 1/4 · EXPLORER   (reads goal → writes explored)");
   logSources2(await explore());
 
   // --- Stage 2: Planner --> writes `plan` ---------------------------------
-  banner("STAGE 2/5 · PLANNER    (reads goal + explored → writes plan)");
+  banner("STAGE 2/4 · PLANNER    (reads goal + explored → writes plan)");
   logSources2(await plan());
 
-  // --- Stage 3: Executor --> writes REAL files + `done` -------------------
-  banner("STAGE 3/5 · EXECUTOR   (reads plan → writes real files to workspace)");
-  const executedR = await buildToDisk();
-  const executedS = summarizeSources(executedR);
-  logSources(executedR, executedS);
-  const filesWritten = workspaceFiles();
-  console.log(`  files written to workspace/src: ${filesWritten.join(", ") || "(none)"}`);
+  // --- Stage 3: FAN-OUT — Frontend || Backend, in parallel and BLIND ------
+  banner("STAGE 3/4 · FAN-OUT    (Frontend ∥ Backend, parallel + blind)");
+  console.log(`  divergence: ${opts.forceDivergence ? "FORCED (deliberate seam injected)" : "natural first"}`);
+  let fan = await runFanout(opts.forceDivergence ? { backendOverride: BACKEND_DIVERGENCE } : undefined);
+  const feS = summarizeSources(fan.frontend);
+  const beS = summarizeSources(fan.backend);
+  console.log("\n  [FRONTEND specialist]");
+  logSources(fan.frontend, feS);
+  console.log("\n  [BACKEND specialist]");
+  logSources(fan.backend, beS);
 
-  // --- Stage 4: VERIFY (build-test-fix, §7) — the Step 3 gate -------------
-  banner("STAGE 4/5 · VERIFY     (actually build + test; fix on failure)   ← Step 3 gate");
-  if (opts.seedBreak) {
-    const seed = seedBreak();
-    if (seed) console.log(`  🔩 SEEDED BREAK (deliberate) in ${seed.file}: ${seed.detail}`);
-    else console.log(`  (seed-break requested but Executor wrote no source file to break)`);
+  // --- Stage 4: RECONCILER — the Step 4 gate ------------------------------
+  banner("STAGE 4/4 · RECONCILER (reads frontend + backend → flags seams)   ← Step 4 gate");
+  let reconciledR = await reconcile();
+  logSources2(reconciledR);
+  let seamCount = parseSeamCount(readSlice("reconciled"));
+
+  // If the blind specialists happened to AGREE, fall back to a deliberate seam
+  // so the gate is exercised against a real disagreement either way.
+  let usedFallback = false;
+  if (seamCount === 0 && !opts.forceDivergence) {
+    usedFallback = true;
+    banner("FALLBACK · natural contracts agreed → injecting a deliberate divergence");
+    console.log("  re-running the Backend specialist with a conflicting contract, then re-reconciling…");
+    fan = { ...fan, backend: await runBackend({ backendOverride: BACKEND_DIVERGENCE }) };
+    console.log("\n  [BACKEND specialist — deliberate divergence]");
+    logSources(fan.backend, summarizeSources(fan.backend));
+    reconciledR = await reconcile();
+    console.log("\n  [RECONCILER — re-run]");
+    logSources2(reconciledR);
+    seamCount = parseSeamCount(readSlice("reconciled"));
   }
-  const verify = await buildTestFix();
 
-  // --- Stage 5: Reviewer --------------------------------------------------
-  banner("STAGE 5/5 · REVIEWER   (reads goal + done → verdict)");
-  const reviewedR = await review();
-  logSources2(reviewedR);
+  // --- The two contracts, side by side, and the Reconciler's verdict ------
+  banner("THE TWO CONTRACTS (built blind) + RECONCILER VERDICT");
+  console.log("── FRONTEND contract ──\n" + extractContract(readSlice("frontend")));
+  console.log("\n── BACKEND contract ──\n" + extractContract(readSlice("backend")));
+  console.log("\n── RECONCILER (`reconciled` slice) ──\n" + (readSlice("reconciled")?.trim() || "(empty)"));
 
   // --- Store contents after the run ---------------------------------------
   banner("SHARED STORE after run (Serena memories)");
   for (const s of SLICES) {
     const len = readSlice(s as Slice)?.trim().length ?? 0;
-    console.log(`  ${s.padEnd(9)} : ${len > 0 ? `${len} chars` : "(empty)"}`);
+    console.log(`  ${s.padEnd(11)} : ${len > 0 ? `${len} chars` : "(empty)"}`);
   }
 
-  // --- STEP 3 GATE --------------------------------------------------------
-  banner("STEP 3 GATE — was a broken build caught and fixed with no human help?");
+  // --- STEP 4 GATE --------------------------------------------------------
+  banner("STEP 4 GATE — did the Reconciler catch a real integration seam?");
 
-  const caughtFailure = verify.trace.some((t) => !t.run.ok);
-  const appliedFix = verify.trace.some((t) => t.action.startsWith("executor-fix"));
-  const wroteRealFiles = filesWritten.length > 0;
-  const endedGreen = verify.status === "PASS";
-  const readPlan = executedS.storeReads.includes("plan"); // Step-2 continuity
-  const noReExplore = !executedS.storeReads.includes("explored");
+  // Blindness: neither specialist read the other's slice.
+  const feBlind = !feS.storeReads.includes("backend");
+  const beBlind = !summarizeSources(fan.backend).storeReads.includes("frontend");
+  const bothBuilt =
+    (readSlice("frontend")?.trim().length ?? 0) > 0 && (readSlice("backend")?.trim().length ?? 0) > 0;
+  const reconcilerReadBoth =
+    summarizeSources(reconciledR).storeReads.includes("frontend") &&
+    summarizeSources(reconciledR).storeReads.includes("backend");
+  const caughtSeam = seamCount >= 1;
 
   const checks: [string, boolean][] = [
-    ["Executor wrote real files to disk", wroteRealFiles],
-    ["Verifier actually RAN the code and caught a real failure (exit≠0)", caughtFailure],
-    ["Failure bounced back and the Executor applied a real fix", appliedFix],
-    ["Re-run went GREEN (build + tests pass)", endedGreen],
-    ["(carried) Executor read `plan` from store, not re-deriving `explored`", readPlan && noReExplore],
+    ["Both specialists produced a half + contract", bothBuilt],
+    ["Fan-out was BLIND (FE didn't read `backend`, BE didn't read `frontend`)", feBlind && beBlind],
+    ["Reconciler read BOTH sides (only agent that sees both)", reconcilerReadBoth],
+    [`Reconciler caught ≥1 real seam (found ${seamCount})`, caughtSeam],
   ];
   for (const [label, ok] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
-
-  console.log(`\n  verification trace (${verify.attempts} attempt(s), status=${verify.status}):`);
-  for (const t of verify.trace)
-    console.log(`    · attempt ${t.attempt} [${t.run.label}] exit=${t.run.exitCode} → ${t.action}`);
+  console.log(
+    `\n  seam source: ${usedFallback ? "DELIBERATE (blind halves agreed; fallback injected)" : "NATURAL (blind halves diverged on their own)"}`
+  );
 
   const passed = checks.every(([, ok]) => ok);
   console.log(
     "\n" +
       (passed
-        ? "  ✅ STEP 3 GATE PASSED — real commands ran, a real build failure was caught from\n" +
-          "     real stderr, the Executor fixed the file, and the re-run went green. No human."
-        : "  ❌ STEP 3 GATE FAILED — see FAILs above.")
+        ? "  ✅ STEP 4 GATE PASSED — two blind specialists, a real payload-contract disagreement,\n" +
+          "     and the Reconciler caught it — a seam no single-side reviewer could see."
+        : "  ❌ STEP 4 GATE FAILED — see FAILs above.")
   );
-
-  banner("REVIEWER VERDICT");
-  console.log(reviewedR.output || "(no text output)");
 
   if (!passed) process.exitCode = 1;
 }

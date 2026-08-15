@@ -52,6 +52,13 @@ export interface RunOpts {
   // Extra tools this role is permitted (e.g. Read/Glob/Grep for the Explorer,
   // and — deliberately — for the Executor, so the gate can prove it declines).
   extraTools?: string[];
+  // Override the system prompt. Used by the swarm specialists whose "who" comes
+  // from stacked agency-agents roster personalities rather than agents/<role>.md.
+  systemPrompt?: string;
+  // Working directory for the agent process. Defaults to the repo root. Set to
+  // the workspace for file-writing specialists so stray RELATIVE writes (helper
+  // scripts, etc.) land in the gitignored workspace instead of polluting the repo.
+  cwd?: string;
 }
 
 export function runAgent(
@@ -60,7 +67,7 @@ export function runAgent(
   directive: string,
   opts: RunOpts = {}
 ): Promise<AgentResult> {
-  const systemPrompt = readFileSync(promptPathFor(role), "utf8");
+  const systemPrompt = opts.systemPrompt ?? readFileSync(promptPathFor(role), "utf8");
   const allowed = [...STORE_TOOLS, ...(opts.extraTools ?? [])].join(",");
   const started = Date.now();
 
@@ -84,7 +91,7 @@ export function runAgent(
     const child = spawn("claude", args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
-      cwd: REPO_ROOT,
+      cwd: opts.cwd ?? REPO_ROOT,
     });
 
     let stderr = "";

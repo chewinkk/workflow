@@ -5,9 +5,28 @@
 // This file is the ONE place that declares the slice contract: who writes it,
 // who reads it. Keep it in sync with the agent prompts under agents/.
 
-export type Slice = "goal" | "explored" | "plan" | "done" | "blocked";
+export type Slice =
+  | "goal"
+  | "explored"
+  | "plan"
+  | "done"
+  | "blocked"
+  // Step 4 swarm slices: each specialist's half-implementation + payload contract,
+  // and the Reconciler's integration verdict.
+  | "frontend"
+  | "backend"
+  | "reconciled";
 
-export const SLICES: Slice[] = ["goal", "explored", "plan", "done", "blocked"];
+export const SLICES: Slice[] = [
+  "goal",
+  "explored",
+  "plan",
+  "done",
+  "blocked",
+  "frontend",
+  "backend",
+  "reconciled",
+];
 
 // §3 access table — used for logging/verification and to keep the wiring honest.
 export interface SliceSpec {
@@ -41,5 +60,20 @@ export const SLICE_SPEC: Record<Slice, SliceSpec> = {
     writtenBy: ["explorer", "planner", "executor", "reviewer"],
     readBy: ["orchestrator"],
     contents: "anything stuck, with the reason",
+  },
+  frontend: {
+    writtenBy: ["frontend"],
+    readBy: ["reconciler"], // Backend must NOT read this — the two fan out BLIND.
+    contents: "frontend half + its assumed AUTH PAYLOAD CONTRACT",
+  },
+  backend: {
+    writtenBy: ["backend"],
+    readBy: ["reconciler"], // Frontend must NOT read this — the two fan out BLIND.
+    contents: "backend half + its assumed AUTH PAYLOAD CONTRACT",
+  },
+  reconciled: {
+    writtenBy: ["reconciler"],
+    readBy: ["orchestrator", "reviewer"],
+    contents: "integration verdict: the seams between frontend and backend, with fixes",
   },
 };

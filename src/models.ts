@@ -9,10 +9,11 @@ export type Role =
   | "explorer"
   | "planner"
   | "executor"
-  | "reviewer";
+  | "reviewer"
+  | "frontend"
+  | "backend"
+  | "reconciler";
   // Later steps (kept here as the §8 map, wired when their step lands):
-  // | "frontend"      // Sonnet 5
-  // | "backend"       // Sonnet 5
   // | "security"      // Opus 4.8
   // | "runtime"       // Sonnet 5
   // | "a11y"          // Sonnet 5
@@ -31,6 +32,11 @@ export const MODELS: Record<Role, string> = {
   executor: "claude-sonnet-5",
   // §8: Reviewer / Security / Orchestrator -> Opus 4.8.
   reviewer: "claude-opus-4-8",
+  // §8: Executor / most specialists -> Sonnet 5.
+  frontend: "claude-sonnet-5",
+  backend: "claude-sonnet-5",
+  // §8: Reconciler -> Sonnet 5, escalating to Opus 4.8 when the cheap pass smells something.
+  reconciler: "claude-sonnet-5",
 };
 
 export function modelFor(role: Role): string {
