@@ -20,6 +20,7 @@ import { review } from "./pipeline/reviewer.js";
 import { runFanout } from "./swarm/fanout.js";
 import { reconcile } from "./swarm/reconciler.js";
 import { buildTestFix } from "./verify/build-test-fix.js";
+import { ensureWorkspaceScaffold } from "./verify/gates.js";
 import type { AgentResult, ToolCall } from "./runner.js";
 import { SLICES, type Slice } from "./store/schema.js";
 import { writeSlice, readSlice, resetJobSlices, ensureStore } from "./store/client.js";
@@ -299,6 +300,12 @@ export async function execute(jobPath: string, _opts: RunOptions = {}): Promise<
   banner(`ORCHESTRATOR — FULL BUILD (execute): consume existing plan → fanout → reconcile → verify\njob: ${jobPath}`);
 
   ensureStore();
+
+  // Provision the gitignored build scaffolding (workspace/src tree + tsconfig)
+  // the verify loop assumes. A freshly rebuilt box has none of it, so create it
+  // BEFORE fan-out — the specialists spawn with cwd=WORKSPACE_DIR (must exist),
+  // and Stage D's `tsc -p workspace/tsconfig.json` needs the config on disk.
+  ensureWorkspaceScaffold();
 
   // GUARD: the whole point of this command is to use the plan already in the
   // store. If it is missing/empty we STOP — we never silently regenerate it.

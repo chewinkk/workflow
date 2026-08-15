@@ -38,6 +38,19 @@ rm -rf "${APP}/.serena"
 ln -sfn "${VOL}/serena" "${APP}/.serena"
 echo "[box-init] /root/.claude -> ${VOL}/claude   |   ${APP}/.serena -> ${VOL}/serena"
 
+# 1d) Workspace scaffolding (gitignored runtime state — a rebuilt image has none).
+#     The harness also provisions workspace/tsconfig.json at run time (the single
+#     source of truth is src/verify/gates.ts), but creating the tree here means a
+#     fresh boot is already sane before the first job runs.
+mkdir -p "${APP}/workspace/src"
+# Defensive belt-and-suspenders for the store split: agents that (mis)resolve the
+# Serena project to <workspace> must still land in the REAL store, never a dead
+# dir. The authoritative fix is SERENA_PROJECT in src/runner.ts; this symlink is
+# cheap insurance for exactly the bug that just bit.
+rm -rf "${APP}/workspace/.serena"
+ln -sfn "${VOL}/serena" "${APP}/workspace/.serena"
+echo "[box-init] ${APP}/workspace/src ready   |   ${APP}/workspace/.serena -> ${VOL}/serena (defensive)"
+
 # 2) Private access via Tailscale (recommended). Only if you supplied an authkey.
 if [ -n "${TS_AUTHKEY:-}" ]; then
   echo "[box-init] starting tailscale (userspace networking)"

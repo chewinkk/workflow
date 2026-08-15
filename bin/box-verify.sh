@@ -27,6 +27,14 @@ ln -sfn "$VOL/claude.json" /root/.claude.json
 [ "$(readlink /root/.claude.json)" = "$VOL/claude.json" ] && ok "/root/.claude.json -> $VOL/claude.json" || no "/root/.claude.json symlink wrong"
 [ "$(readlink "$APP/.serena")" = "$VOL/serena" ]          && ok "$APP/.serena -> $VOL/serena"            || no "$APP/.serena symlink wrong"
 
+# Workspace scaffolding + defensive store symlink (converge a running box without
+# a reboot). The harness rewrites workspace/tsconfig.json on every run, so we only
+# guarantee the tree + the defensive symlink here.
+mkdir -p "$APP/workspace/src"
+[ -L "$APP/workspace/.serena" ] || { rm -rf "$APP/workspace/.serena"; ln -sfn "$VOL/serena" "$APP/workspace/.serena"; }
+[ -d "$APP/workspace/src" ]                                       && ok "$APP/workspace/src present"                    || no "$APP/workspace/src missing"
+[ "$(readlink "$APP/workspace/.serena")" = "$VOL/serena" ]        && ok "$APP/workspace/.serena -> $VOL/serena (defensive)" || no "$APP/workspace/.serena symlink wrong"
+
 step "2/5  Serena baked at build (no runtime PyPI)"
 if command -v serena >/dev/null 2>&1; then
   ok "serena on PATH: $(command -v serena)"

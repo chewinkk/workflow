@@ -6,7 +6,7 @@
 // verification loop about the code, not about tsconfig flags.
 
 import { join } from "node:path";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 
 export const WORKSPACE_DIR = join(process.cwd(), "workspace");
 export const WORKSPACE_SRC = join(WORKSPACE_DIR, "src");
@@ -78,6 +78,22 @@ export const WORKSPACE_TSCONFIG = JSON.stringify(
   null,
   2
 );
+
+// Path of the build config the tsc gate compiles against.
+export const WORKSPACE_TSCONFIG_PATH = join(WORKSPACE_DIR, "tsconfig.json");
+
+// Provision the workspace scaffolding the harness ASSUMES exists: the source
+// tree (so specialists spawned with cwd=WORKSPACE_DIR don't ENOENT, and so tsc's
+// include glob has a root) and the build config itself. This is gitignored
+// runtime state — a freshly rebuilt box has none of it — so the harness, which
+// owns the build config, must create it rather than assume it. Idempotent and
+// cheap; safe to call at the top of every build. The tsconfig is always rewritten
+// so it can never drift from WORKSPACE_TSCONFIG above (the single source of truth
+// that TS5058 "path does not exist" came from never being written).
+export function ensureWorkspaceScaffold(): void {
+  mkdirSync(WORKSPACE_SRC, { recursive: true });
+  writeFileSync(WORKSPACE_TSCONFIG_PATH, WORKSPACE_TSCONFIG + "\n", "utf8");
+}
 
 export interface Cmd {
   label: string;
