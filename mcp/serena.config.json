@@ -1,10 +1,9 @@
 {
   "mcpServers": {
     "serena": {
-      "command": "uvx",
+      "command": "bash",
       "args": [
-        "--from", "serena-agent", "serena", "start-mcp-server",
-        "--project", "/home/user/workflow",
+        "bin/serena-mcp.sh",
         "--context", "agent",
         "--transport", "stdio",
         "--enable-web-dashboard", "false",

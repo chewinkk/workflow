@@ -45,6 +45,14 @@ before adding the next.
   roster hires. Critics: Sonnet 5.
   *Gate: the Council produces a real ruling that changes the plan slice and the
   Judge doesn't split the difference.*
+- 🚧 **Step 6 — Railway deploy (artifacts staged; not deployed).** An interactive
+  box you shell into via code-server and authenticate against your Max
+  subscription (`claude auth login`) — no API key. Serena is baked into the image
+  (pinned), and a `/data` persistent volume covers the Claude login credential
+  (`/root/.claude` + `/root/.claude.json`) and the Serena store (`/app/.serena`).
+  code-server is loopback-only behind Tailscale + mandatory password. See
+  `docs/RAILWAY-STEP6.md`. *Deploy, volume attach, and login are performed by the
+  operator; nothing here deploys on its own.*
 - ⬜ Step 6 — Railway deploy
 
 ## Run it
