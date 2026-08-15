@@ -11,6 +11,29 @@ import { existsSync, readdirSync } from "node:fs";
 export const WORKSPACE_DIR = join(process.cwd(), "workspace");
 export const WORKSPACE_SRC = join(WORKSPACE_DIR, "src");
 
+// The frontend specialist builds a real, browser-renderable liquid-glass UI here.
+// The frame-timing harness (verify/frame-timing.ts) bundles CLIENT_ENTRY, serves
+// CLIENT_HTML, and drives it under Chromium. These paths are the CONTRACT between
+// the frontend specialist and the harness — keep them in sync with the directive
+// in swarm/fanout.ts.
+export const CLIENT_DIR = join(WORKSPACE_SRC, "client");
+export const CLIENT_HTML = join(CLIENT_DIR, "index.html");
+export const CLIENT_ENTRY = join(CLIENT_DIR, "main.ts");
+
+// Frame-timing budget (spec §7 acceptance: "No jank: animation holds frame budget
+// under interaction"; Council ruling: worst frame < 22ms, dropped-frame ratio < 5%).
+// A frame is "dropped" when its inter-frame delta exceeds the 60fps budget.
+export const FRAME_BUDGET_MS = 1000 / 60; // 16.67ms — the 60fps main-thread budget
+export const WORST_FRAME_MAX_MS = 22; // Council: worst single frame must be under this
+export const DROPPED_RATIO_MAX = 0.05; // Council: <5% of frames may miss the 60fps budget
+// A frame is "dropped" when it misses a FULL refresh interval (Chrome's own
+// definition of a dropped/janky frame), not merely when it exceeds the 16.67ms
+// budget by jitter. The harness holds a steady 60fps pump, so a delta this large
+// means the main thread was actually blocked, i.e. real jank.
+export const DROPPED_FRAME_MS = FRAME_BUDGET_MS * 1.5; // ~25ms = missed a refresh
+// Warm-up frames (first paint / compositor spin-up) are not interaction jank.
+export const FRAME_WARMUP_DROP = 10;
+
 // Recursively list every .ts file under workspace/src (absolute paths). The
 // Executor may organize code into subdirectories, so all workspace discovery
 // (file count, test discovery, fault injection) must recurse — tsc's

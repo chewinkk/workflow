@@ -55,9 +55,20 @@ function frontend(): Promise<AgentResult> {
     "You are the FRONTEND specialist in a blind fan-out. Read the memory named `goal` " +
     "and the memory named `plan`. Do NOT read the `backend` memory — you are working " +
     "blind to the backend team.\n" +
-    `Build the login + signup CLIENT (the liquid-glass UI and the code that CALLS the auth ` +
-    `backend over HTTP) as real files under ${WORKSPACE_SRC}/client/ (pure TypeScript, ` +
-    "explicit `.ts` import extensions, no native deps, do not touch tsconfig.json).\n" +
+    `Build the login + signup CLIENT as a REAL, BROWSER-RENDERABLE liquid-glass UI under ` +
+    `${WORKSPACE_SRC}/client/. A downstream frame-timing harness will load this UI in Chromium ` +
+    "and DRIVE it under interaction, measuring real frame timing (worst frame must be <22ms and " +
+    "<5% of frames may miss the 60fps budget), so it must actually render and animate. Produce:\n" +
+    `  - ${WORKSPACE_SRC}/client/index.html — the login/signup markup and the glass CSS (frosted / ` +
+    "backdrop-filter treatment). Do NOT add your own <script> or bundler tag — the harness bundles " +
+    "and injects your entry for you.\n" +
+    `  - ${WORKSPACE_SRC}/client/main.ts — the interaction logic and the code that CALLS the auth ` +
+    "backend over HTTP (pure TypeScript, explicit `.ts` import extensions, no native deps, browser-" +
+    "targetable — no node:* imports in the client). Do not touch tsconfig.json.\n" +
+    "Give the harness stable hooks: put data-testid=\"card\" on the glass card, data-testid=\"email\" and " +
+    "data-testid=\"password\" on those inputs, data-testid=\"submit\" on the primary button, and " +
+    "data-testid=\"toggle-mode\" on the login<->signup switch. Keep the animation smooth — animate " +
+    "transform/opacity, avoid layout-triggering properties in the animation path.\n" +
     "Because you cannot see the backend, YOU decide the exact HTTP auth contract your client " +
     "will call. Then call write_memory to store the memory named `frontend` containing a short " +
     "implementation summary followed by this exact block, filled in:\n\n" +

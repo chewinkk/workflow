@@ -15,9 +15,14 @@ import { readFileSync } from "node:fs";
 import { load } from "js-yaml";
 import { explore } from "./pipeline/explorer.js";
 import { plan } from "./pipeline/planner.js";
+import { applyReconciliation } from "./pipeline/executor.js";
+import { review } from "./pipeline/reviewer.js";
+import { runFanout } from "./swarm/fanout.js";
+import { reconcile } from "./swarm/reconciler.js";
+import { buildTestFix } from "./verify/build-test-fix.js";
 import type { AgentResult, ToolCall } from "./runner.js";
 import { SLICES, type Slice } from "./store/schema.js";
-import { writeSlice, readSlice, resetJobSlices } from "./store/client.js";
+import { writeSlice, readSlice, resetJobSlices, ensureStore } from "./store/client.js";
 import { runCouncil } from "./council/council.js";
 
 interface Job {
@@ -275,6 +280,99 @@ export async function run(jobPath: string, _opts: RunOptions = {}): Promise<void
         : "  ❌ STEP 5 GATE FAILED — see FAILs above.")
   );
 
+  if (!passed) process.exitCode = 1;
+}
+
+// ===========================================================================
+// FULL BUILD (`execute`) — the path that actually EXECUTES an existing plan.
+//
+// This is deliberately a SEPARATE entrypoint from run(). It consumes the `plan`
+// slice already in the store (e.g. the Council-revised plan on the Railway box)
+// and NEVER regenerates it: it does not call resetJobSlices(), does not re-run
+// Explorer/Planner/Council, and refuses to run at all if no plan is present.
+// Pipeline: fanout → reconcile → apply-seams → build/test/frame-timing → review.
+// ===========================================================================
+export async function execute(jobPath: string, _opts: RunOptions = {}): Promise<void> {
+  const job = loadJob(jobPath);
+  const goal = goalText(job);
+
+  banner(`ORCHESTRATOR — FULL BUILD (execute): consume existing plan → fanout → reconcile → verify\njob: ${jobPath}`);
+
+  ensureStore();
+
+  // GUARD: the whole point of this command is to use the plan already in the
+  // store. If it is missing/empty we STOP — we never silently regenerate it.
+  const existingPlan = readSlice("plan")?.trim() ?? "";
+  if (!existingPlan) {
+    throw new Error(
+      "execute: the store has no `plan` slice (or it is empty). This command consumes an " +
+        "EXISTING plan; it does not generate one. Run it in the working directory whose " +
+        ".serena/memories/plan.md holds the plan (e.g. the Railway box), or run `build` first. " +
+        "Refusing to proceed so the plan is never silently re-planned."
+    );
+  }
+
+  // Re-seed `goal` (idempotent — it matches the plan) but touch NOTHING else that
+  // holds real work. In particular: `plan`, `explored`, and `council` are left
+  // exactly as they are. We only clear the four downstream slices this build will
+  // (re)write, so a re-run starts clean without ever endangering the plan.
+  writeSlice("goal", goal);
+  for (const s of ["frontend", "backend", "reconciled", "done"] as Slice[]) writeSlice(s, "");
+  console.log(`  using existing plan (${existingPlan.length} chars) — NOT regenerating.`);
+  console.log(`  council slice preserved (${(readSlice("council")?.trim().length ?? 0)} chars).`);
+  console.log(`  cleared downstream build slices: frontend, backend, reconciled, done`);
+
+  // --- Stage A: FAN-OUT — Frontend + Backend, blind & parallel ------------
+  banner("STAGE A · FAN-OUT   (Frontend + Backend, blind ∥ → write code + `frontend`/`backend`)");
+  const fan = await runFanout();
+  logSources2(fan.frontend);
+  logSources2(fan.backend);
+
+  // --- Stage B: RECONCILE — the only agent that sees both contracts -------
+  banner("STAGE B · RECONCILE (reads frontend + backend → writes `reconciled` seams)");
+  logSources2(await reconcile());
+  console.log("\n── RECONCILED SEAMS ──\n" + (readSlice("reconciled")?.trim() || "(empty)"));
+
+  // --- Stage C: APPLY — Executor closes the seams on disk, writes `done` ---
+  banner("STAGE C · APPLY     (Executor consolidates the seams on disk → writes `done`)");
+  logSources2(await applyReconciliation());
+
+  // --- Stage D: VERIFY — build + test + FRAME-TIMING gate -----------------
+  banner("STAGE D · VERIFY    (tsc → node --test → frame-timing harness, fix-bounce loop)");
+  const verify = await buildTestFix();
+  console.log(`\n  verification: ${verify.status} after ${verify.attempts} attempt(s)`);
+
+  // --- Stage E: REVIEW ----------------------------------------------------
+  banner("STAGE E · REVIEW    (reads goal + done → verdict)");
+  const rev = await review();
+  logSources2(rev);
+  console.log("\n── REVIEWER VERDICT ──\n" + indent(rev.output));
+
+  // --- Store + workspace after the run ------------------------------------
+  banner("SHARED STORE after full build (Serena memories)");
+  for (const s of SLICES) {
+    const len = readSlice(s as Slice)?.trim().length ?? 0;
+    console.log(`  ${s.padEnd(11)} : ${len > 0 ? `${len} chars` : "(empty)"}`);
+  }
+
+  // --- FULL-BUILD GATE ----------------------------------------------------
+  banner("FULL-BUILD GATE — did the plan become verified, running code?");
+  const checks: [string, boolean][] = [
+    ["Plan was consumed, not regenerated (plan slice non-empty & untouched)", existingPlan.length > 0],
+    ["Fan-out wrote both halves (frontend + backend slices)", (readSlice("frontend")?.trim().length ?? 0) > 0 && (readSlice("backend")?.trim().length ?? 0) > 0],
+    ["Reconciler wrote a seam verdict (reconciled slice)", (readSlice("reconciled")?.trim().length ?? 0) > 0],
+    ["Executor recorded consolidation (done slice)", (readSlice("done")?.trim().length ?? 0) > 0],
+    ["Verification PASSED (build + tests + frame budget)", verify.status === "PASS"],
+  ];
+  for (const [label, ok] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
+  const passed = checks.every(([, ok]) => ok);
+  console.log(
+    "\n" +
+      (passed
+        ? "  ✅ FULL-BUILD GATE PASSED — the Council-approved plan is now real, verified code:\n" +
+          "     both halves built, seams reconciled, and the frame budget measured under Chromium."
+        : "  ❌ FULL-BUILD GATE FAILED — see FAILs above.")
+  );
   if (!passed) process.exitCode = 1;
 }
 

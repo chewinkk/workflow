@@ -8,7 +8,7 @@
 
 import { runAgent, type AgentResult } from "../runner.js";
 import { modelFor } from "../models.js";
-import { WORKSPACE_SRC } from "../verify/gates.js";
+import { WORKSPACE_DIR, WORKSPACE_SRC } from "../verify/gates.js";
 
 const FILE_TOOLS = ["Write", "Edit", "MultiEdit", "Read", "Glob", "Grep"];
 
@@ -35,19 +35,55 @@ export interface FixResult {
   summary: string;
 }
 
-// Called by the verifier with the REAL stderr from a failed build/test.
-export async function fixOnDisk(phase: "build" | "test", errorText: string): Promise<FixResult> {
+// Called by the verifier with the REAL error from a failed build/test/frame-timing
+// tier. For "perf", errorText is the frame-timing harness's metrics + guidance.
+export async function fixOnDisk(phase: "build" | "test" | "perf", errorText: string): Promise<FixResult> {
+  const intro =
+    phase === "perf"
+      ? "You are the Executor in UI-PERFORMANCE fix mode. The frame-timing gate measured the " +
+        "liquid-glass UI running in a real browser under interaction and it is JANKY:\n\n"
+      : `You are the Executor in fix mode. The ${phase} just FAILED with this real error:\n\n`;
+  const body =
+    phase === "perf"
+      ? "1) Read the client UI file(s) under workspace/src/client/ that drive the animation. " +
+        "2) Make the MINIMAL change that brings both metrics under budget (animate transform/opacity " +
+        "only, drop layout-triggering properties from the animation path, cut synchronous layout reads " +
+        "in handlers, shrink backdrop-filter regions). Do not touch tsconfig.json. "
+      : `The code lives under ${WORKSPACE_SRC}/. ` +
+        "1) Read the offending file(s) named in the error. " +
+        "2) Make the MINIMAL edit that fixes this specific failure — do not rewrite unrelated code, " +
+        "do not touch tsconfig.json. ";
   const directive =
-    `You are the Executor in fix mode. The ${phase} just FAILED with this real error:\n\n` +
-    "```\n" +
-    errorText +
-    "\n```\n\n" +
-    `The code lives under ${WORKSPACE_SRC}/. ` +
-    "1) Read the offending file(s) named in the error. " +
-    "2) Make the MINIMAL edit that fixes this specific failure — do not rewrite unrelated code, " +
-    "do not touch tsconfig.json. " +
+    intro + "```\n" + errorText + "\n```\n\n" + body +
     "3) Reply with one line naming the file(s) you edited and what you changed. " +
     "Do not call write_memory; just fix the files.";
-  const r = await runAgent("executor", modelFor("executor"), directive, { extraTools: FILE_TOOLS });
+  const r = await runAgent("executor", modelFor("executor"), directive, {
+    extraTools: FILE_TOOLS,
+    cwd: WORKSPACE_DIR,
+  });
   return { summary: r.output.replace(/\s+/g, " ").slice(0, 200) || "(no summary)" };
+}
+
+// Executor CONSOLIDATION pass, used only by the full-build (`execute`) path AFTER
+// the blind fan-out + Reconciler. The specialists already wrote client+server to
+// disk; this pass does NOT rebuild — it reads the Reconciler's seam list and makes
+// the minimal edits to make the two halves agree on ONE auth-payload contract,
+// then records what it closed in `done`. (buildToDisk, which builds the whole app
+// from `plan`, would clobber the fan-out output, so it is not used here.)
+export function applyReconciliation(): Promise<AgentResult> {
+  const directive =
+    "You are the Executor in CONSOLIDATION mode after a blind fan-out. The Frontend and Backend " +
+    "specialists each built their half under workspace/src/{client,server}; the Reconciler compared " +
+    "their AUTH PAYLOAD CONTRACT blocks.\n" +
+    "1) Call read_memory on `reconciled` (the seam list), then on `frontend` and `backend` for context.\n" +
+    "2) For EACH seam in `reconciled`, edit the on-disk files under workspace/src to make the client " +
+    "and server agree on a single contract — prefer the reconciliation the Reconciler named. Make " +
+    "MINIMAL edits; do NOT rebuild from scratch, do NOT touch tsconfig.json, keep pure TS with explicit " +
+    "`.ts` import extensions. If `reconciled` says SEAMS_FOUND: 0, change nothing.\n" +
+    "3) Call write_memory to store `done`: list each file you touched and each seam you closed (or " +
+    "state that the contracts already agreed).";
+  return runAgent("executor", modelFor("executor"), directive, {
+    extraTools: FILE_TOOLS,
+    cwd: WORKSPACE_DIR,
+  });
 }

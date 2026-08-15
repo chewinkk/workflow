@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { fixOnDisk } from "../pipeline/executor.js";
 import { replan } from "../pipeline/planner.js";
 import { buildCmd, testCmd, MAX_BOUNCES, workspaceTestFiles, type Cmd } from "./gates.js";
+import { frameTimingGate, frameTimingErrorText, type FrameTimingResult } from "./frame-timing.js";
 
 const REPO_ROOT = process.cwd();
 
@@ -62,6 +63,18 @@ function errorText(run: CmdRun): string {
   return (run.stderr || run.stdout || `exit ${run.exitCode}`).slice(0, 4000);
 }
 
+// Represent a frame-timing gate result as a CmdRun so it fits the same trace shape.
+function timingCmdRun(t: FrameTimingResult): CmdRun {
+  return {
+    label: "frame-timing (chromium)",
+    command: "playwright frame-timing harness",
+    exitCode: t.pass ? 0 : 1,
+    stdout: t.detail,
+    stderr: t.pass ? "" : t.detail,
+    ok: t.pass,
+  };
+}
+
 function log(msg: string): void {
   console.log(msg);
 }
@@ -93,26 +106,46 @@ export async function buildTestFix(): Promise<VerifyResult> {
     const testFiles = workspaceTestFiles();
     if (testFiles.length === 0) {
       trace.push({ attempt, run: build, action: "build OK; no test files found" });
-      log(`    (no *.test.ts in workspace/src — build-only verification)`);
-      return { status: "PASS", attempts: attempt, trace };
+      log(`    (no *.test.ts in workspace/src — build passes; proceeding to frame-timing gate)`);
+    } else {
+      const test = await runCmd(testCmd(testFiles));
+      log(`  ▶ [attempt ${attempt}] $ ${test.command}`);
+      log(`    exit=${test.exitCode} (${test.ok ? "OK" : "FAIL"})`);
+      if (!test.ok) {
+        log(`    real output:\n${indent(errorText(test))}`);
+        if (attempt > MAX_BOUNCES) {
+          trace.push({ attempt, run: test, action: "escalate-to-planner (tests still failing)" });
+          break;
+        }
+        log(`    ↳ bouncing test failure to Executor for a fix…`);
+        const fix = await fixOnDisk("test", errorText(test));
+        trace.push({ attempt, run: test, action: `executor-fix: ${fix.summary}` });
+        continue;
+      }
+      trace.push({ attempt, run: test, action: "build + tests green" });
     }
-    const test = await runCmd(testCmd(testFiles));
-    log(`  ▶ [attempt ${attempt}] $ ${test.command}`);
-    log(`    exit=${test.exitCode} (${test.ok ? "OK" : "FAIL"})`);
-    if (!test.ok) {
-      log(`    real output:\n${indent(errorText(test))}`);
+
+    // --- Tier 3: FRAME TIMING (the "not laggy" gate) ----------------------
+    // Actually renders the liquid-glass UI in Chromium, drives interaction, and
+    // measures real frame timing. A breach — or a missing/un-renderable UI — is
+    // a failure that bounces to the Executor's perf-fix mode, same as build/test.
+    log(`  ▶ [attempt ${attempt}] frame-timing harness (Chromium + rAF sampling under interaction)`);
+    const timing = await frameTimingGate();
+    const timingRun = timingCmdRun(timing);
+    log(`    ${timing.ran ? "measured" : "COULD NOT MEASURE"}: ${timing.detail}`);
+    if (!timing.pass) {
       if (attempt > MAX_BOUNCES) {
-        trace.push({ attempt, run: test, action: "escalate-to-planner (tests still failing)" });
+        trace.push({ attempt, run: timingRun, action: "escalate-to-planner (frame budget still blown)" });
         break;
       }
-      log(`    ↳ bouncing test failure to Executor for a fix…`);
-      const fix = await fixOnDisk("test", errorText(test));
-      trace.push({ attempt, run: test, action: `executor-fix: ${fix.summary}` });
+      log(`    ↳ bouncing frame-timing failure to Executor for a UI-perf fix…`);
+      const fix = await fixOnDisk("perf", frameTimingErrorText(timing));
+      trace.push({ attempt, run: timingRun, action: `executor-fix: ${fix.summary}` });
       continue;
     }
 
-    // Both tiers green.
-    trace.push({ attempt, run: test, action: "build + tests green" });
+    // All three tiers green.
+    trace.push({ attempt, run: timingRun, action: "build + tests + frame budget green" });
     return { status: "PASS", attempts: attempt, trace };
   }
 
