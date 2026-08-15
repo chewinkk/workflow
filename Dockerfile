@@ -10,7 +10,7 @@ FROM node:22-bookworm-slim
 
 # --- OS deps -------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-venv python3-pip git curl ca-certificates openssh-client \
+      python3 python3-venv python3-pip git curl ca-certificates openssh-client iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Claude Code CLI -----------------------------------------------------
@@ -45,9 +45,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN chmod +x bin/box-init.sh bin/serena-mcp.sh
+RUN chmod +x bin/box-init.sh bin/serena-mcp.sh bin/box-verify.sh
 
-# code-server listens on 127.0.0.1:8080 (loopback only — reached via Tailnet or
-# an SSH tunnel; NEVER attach a public Railway domain — see the runbook).
-EXPOSE 8080
+# code-server listens on 127.0.0.1:8080 (loopback only — reached via your Tailnet).
+# Deliberately NO `EXPOSE` and NO public port: EXPOSE can prompt Railway to
+# auto-generate a public domain, which is exactly what we must avoid. Reach the
+# box only over Tailscale (or an SSH tunnel). See docs/RAILWAY-STEP6.md.
 ENTRYPOINT ["bin/box-init.sh"]
