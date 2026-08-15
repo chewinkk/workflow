@@ -19,6 +19,14 @@ import { WORKSPACE_DIR, WORKSPACE_SRC } from "../verify/gates.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROSTER = join(__dirname, "..", "..", "agents", "roster");
 
+// Specialists write files only — they must NOT shell out to build/verify (that
+// is the harness's job) or spawn subagents. Blocking these keeps them fast and
+// contained.
+const NO_SHELL = ["Bash", "Task", "KillShell", "BashOutput"];
+const DONT_VERIFY =
+  " Do NOT run any shell/build/test commands and do NOT spawn subagents — just " +
+  "write the source files and your contract memory; the harness verifies the build.";
+
 // The fixed shape both specialists must fill in, so the Reconciler can diff them.
 export const CONTRACT_FORMAT = [
   "=== AUTH PAYLOAD CONTRACT ===",
@@ -54,10 +62,12 @@ function frontend(): Promise<AgentResult> {
     "will call. Then call write_memory to store the memory named `frontend` containing a short " +
     "implementation summary followed by this exact block, filled in:\n\n" +
     CONTRACT_FORMAT +
-    "\n\nDo not write any other memory.";
+    "\n\nDo not write any other memory." +
+    DONT_VERIFY;
   return runAgent("frontend", modelFor("frontend"), directive, {
     systemPrompt: persona(["engineering-frontend-developer", "design-ui-designer"]),
     extraTools: ["Write", "Edit", "MultiEdit", "Read", "Glob", "Grep"],
+    disallowedTools: NO_SHELL,
     cwd: WORKSPACE_DIR, // contain stray relative writes to the gitignored workspace
   });
 }
@@ -75,14 +85,16 @@ export function runBackend(div?: Divergence): Promise<AgentResult> {
     "implementation summary followed by this exact block, filled in:\n\n" +
     CONTRACT_FORMAT +
     "\n\nDo not write any other memory.";
-  const directive = div?.backendOverride
-    ? base +
-      "\n\nIMPORTANT contract requirements you MUST follow for this build:\n" +
-      div.backendOverride
-    : base;
+  const directive =
+    (div?.backendOverride
+      ? base +
+        "\n\nIMPORTANT contract requirements you MUST follow for this build:\n" +
+        div.backendOverride
+      : base) + DONT_VERIFY;
   return runAgent("backend", modelFor("backend"), directive, {
     systemPrompt: persona(["engineering-backend-architect"]),
     extraTools: ["Write", "Edit", "MultiEdit", "Read", "Glob", "Grep"],
+    disallowedTools: NO_SHELL,
     cwd: WORKSPACE_DIR, // contain stray relative writes to the gitignored workspace
   });
 }

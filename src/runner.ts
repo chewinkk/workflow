@@ -59,6 +59,10 @@ export interface RunOpts {
   // the workspace for file-writing specialists so stray RELATIVE writes (helper
   // scripts, etc.) land in the gitignored workspace instead of polluting the repo.
   cwd?: string;
+  // Tools to hard-block (--disallowedTools). Use to stop specialists from
+  // self-verifying via Bash or spawning subagents via Task — those are the
+  // harness's job and cause slowness + stray files.
+  disallowedTools?: string[];
 }
 
 export function runAgent(
@@ -87,6 +91,9 @@ export function runAgent(
       "stream-json",
       "--verbose",
     ];
+    if (opts.disallowedTools?.length) {
+      args.push("--disallowedTools", opts.disallowedTools.join(","));
+    }
 
     const child = spawn("claude", args, {
       stdio: ["ignore", "pipe", "pipe"],

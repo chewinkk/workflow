@@ -19,21 +19,23 @@ const ROSTER = join(__dirname, "..", "..", "agents", "roster");
 export function reconcile(): Promise<AgentResult> {
   const systemPrompt = readFileSync(join(ROSTER, "engineering-senior-developer.md"), "utf8");
   const directive =
-    "You are the RECONCILER — the integration pass after a blind fan-out. The Frontend and " +
-    "Backend specialists built their halves WITHOUT seeing each other. Read the memory named " +
-    "`frontend` and the memory named `backend`.\n" +
-    "Compare their two `AUTH PAYLOAD CONTRACT` blocks field by field: endpoint methods/paths, " +
-    "request field names, success/error response shapes and status codes, and session mechanism. " +
-    "Find every disagreement that would break integration at runtime — the kind a reviewer " +
-    "looking at only one side could never catch.\n" +
-    "Call write_memory to store the memory named `reconciled`. It MUST begin with a single line:\n" +
+    "You are the RECONCILER — the integration pass after a blind fan-out. Do EXACTLY these " +
+    "three steps and nothing else:\n" +
+    "STEP 1: call read_memory on `frontend`.\n" +
+    "STEP 2: call read_memory on `backend`.\n" +
+    "STEP 3: compare their two `AUTH PAYLOAD CONTRACT` blocks field by field (endpoint " +
+    "methods/paths, request field names, success/error response shapes and status codes, " +
+    "session mechanism), then call write_memory to store the memory named `reconciled`.\n\n" +
+    "The `reconciled` content MUST begin with a single line:\n" +
     "  SEAMS_FOUND: <number>\n" +
     "then, for each seam, a line:\n" +
-    "  - <field>: frontend=`<value>` VS backend=`<value>`  → fix: <the reconciliation>\n" +
-    "If and only if the two contracts fully agree, write `SEAMS_FOUND: 0`. Do not invent seams; " +
-    "report only real mismatches between the two contracts.";
+    "  - <field>: frontend=`<value>` VS backend=`<value>`  -> fix: <the reconciliation>\n" +
+    "If and only if the two contracts fully agree, write `SEAMS_FOUND: 0`. Report only real " +
+    "mismatches between the two contracts; do not invent seams.\n\n" +
+    "Use ONLY the read_memory and write_memory tools. Do NOT run shell commands, do NOT read " +
+    "files, do NOT spawn subagents. This is a two-read, one-write task.";
   return runAgent("reconciler", modelFor("reconciler"), directive, {
     systemPrompt,
-    extraTools: ["Read", "Glob", "Grep"],
+    disallowedTools: ["Bash", "Task", "KillShell", "BashOutput", "Read", "Glob", "Grep", "Write", "Edit"],
   });
 }
