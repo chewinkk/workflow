@@ -12,7 +12,9 @@ export type Role =
   | "reviewer"
   | "frontend"
   | "backend"
-  | "reconciler";
+  | "reconciler"
+  | "council-critic"
+  | "council-judge";
   // Later steps (kept here as the §8 map, wired when their step lands):
   // | "security"      // Opus 4.8
   // | "runtime"       // Sonnet 5
@@ -37,6 +39,9 @@ export const MODELS: Record<Role, string> = {
   backend: "claude-sonnet-5",
   // §8: Reconciler -> Sonnet 5, escalating to Opus 4.8 when the cheap pass smells something.
   reconciler: "claude-sonnet-5",
+  // §8: Council critics -> Sonnet 5 (each has a narrow lens); Council Judge -> Opus 4.8.
+  "council-critic": "claude-sonnet-5",
+  "council-judge": "claude-opus-4-8",
 };
 
 export function modelFor(role: Role): string {

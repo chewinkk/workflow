@@ -15,7 +15,9 @@ export type Slice =
   // and the Reconciler's integration verdict.
   | "frontend"
   | "backend"
-  | "reconciled";
+  | "reconciled"
+  // Step 5: the Council's ruling on the plan.
+  | "council";
 
 export const SLICES: Slice[] = [
   "goal",
@@ -26,6 +28,7 @@ export const SLICES: Slice[] = [
   "frontend",
   "backend",
   "reconciled",
+  "council",
 ];
 
 // §3 access table — used for logging/verification and to keep the wiring honest.
@@ -75,5 +78,10 @@ export const SLICE_SPEC: Record<Slice, SliceSpec> = {
     writtenBy: ["reconciler"],
     readBy: ["orchestrator", "reviewer"],
     contents: "integration verdict: the seams between frontend and backend, with fixes",
+  },
+  council: {
+    writtenBy: ["council-judge"],
+    readBy: ["orchestrator", "planner", "executor"],
+    contents: "the Judge's ruling: RULING / ADOPTED / OVERRIDDEN (the plan itself is revised in `plan`)",
   },
 };

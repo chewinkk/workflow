@@ -1,26 +1,24 @@
 // Top-level orchestrator loop (spec §2).
 //
-// Step 4 scope: adds the SWARM (§6/§2). After the Planner, the single Executor
-// role fans out into Frontend + Backend specialists running in PARALLEL and
-// BLIND (each reads only goal+plan, never the other's slice), then a Reconciler
-// integrates and flags the seams between them. Still NO council (Step 5).
+// Step 5 scope: adds the LLM COUNCIL (§6). When a plan is consequential (here:
+// the job sets council:true), the Council convenes ON the plan: four critics
+// (Contrarian, First-Principles, Expansionist, Outsider) fire in parallel with
+// fresh context, blind to each other; then a Judge runs last with all four
+// verdicts and RULES — no hedging — writing the revised plan back to the store.
 //
-// This run demonstrates the swarm gate (Reconciler catches an integration seam).
-// The Step 3 verification loop remains in the codebase (src/verify/) and is
-// re-composed with the swarm in a later integration pass; it is not exercised in
-// this focused Step 4 demonstration.
+// This run demonstrates the Council gate (a real ruling that changes the plan).
+// The Step 3 verification loop and the Step 4 swarm remain in the codebase and
+// are re-composed in a later integration pass; they are not exercised in this
+// focused Step 5 demonstration.
 
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { load } from "js-yaml";
 import { explore } from "./pipeline/explorer.js";
 import { plan } from "./pipeline/planner.js";
 import type { AgentResult, ToolCall } from "./runner.js";
 import { SLICES, type Slice } from "./store/schema.js";
 import { writeSlice, readSlice, resetJobSlices } from "./store/client.js";
-import { WORKSPACE_DIR, WORKSPACE_SRC, WORKSPACE_TSCONFIG } from "./verify/gates.js";
-import { runFanout, runBackend } from "./swarm/fanout.js";
-import { reconcile } from "./swarm/reconciler.js";
-import { join } from "node:path";
+import { runCouncil } from "./council/council.js";
 
 interface Job {
   goal: string;
@@ -31,16 +29,8 @@ interface Job {
 
 export interface RunOptions {
   seedBreak?: boolean;
-  forceDivergence?: boolean; // skip the natural attempt; inject the seam directly
+  forceDivergence?: boolean; // Step 4 swarm option (kept for that code path)
 }
-
-// The deliberate divergence used only as a fallback if the blind specialists
-// happen to agree — a real, specific contract mismatch for the Reconciler to catch.
-const BACKEND_DIVERGENCE =
-  "- Use the field name `username` (NOT `email`) in request bodies.\n" +
-  "- Return the session as a bearer token in the JSON response body (NOT an httpOnly cookie).\n" +
-  "- Mount endpoints under `/auth/*` (e.g. POST /auth/register, POST /auth/signin).\n" +
-  "- On bad credentials return HTTP 422 (NOT 401).";
 
 function loadJob(path: string): Job {
   const job = load(readFileSync(path, "utf8")) as Job;
@@ -162,85 +152,86 @@ function logSources2(r: AgentResult): void {
   logSources(r, summarizeSources(r));
 }
 
-function provisionWorkspace(): void {
-  // Fresh workspace each run so the specialists build from scratch.
-  rmSync(WORKSPACE_DIR, { recursive: true, force: true });
-  mkdirSync(WORKSPACE_SRC, { recursive: true });
-  writeFileSync(join(WORKSPACE_DIR, "tsconfig.json"), WORKSPACE_TSCONFIG, "utf8");
+// Hedge phrases a real ruling must not contain (spec §6: the Judge must rule).
+const HEDGE_PHRASES = [
+  "on one hand",
+  "on the other hand",
+  "it depends",
+  "both are valid",
+  "both approaches are valid",
+  "split the difference",
+  "middle ground",
+  "a compromise between",
+];
+
+function hedgesFound(text: string): string[] {
+  const lc = text.toLowerCase();
+  return HEDGE_PHRASES.filter((p) => lc.includes(p));
 }
 
-// Pull the AUTH PAYLOAD CONTRACT block out of a specialist's slice for display.
-function extractContract(slice: string | null): string {
-  if (!slice) return "(no slice)";
-  const m = slice.match(/=== AUTH PAYLOAD CONTRACT ===([\s\S]*?)=== END CONTRACT ===/);
-  return m ? m[1].trim() : "(no contract block found)";
+// Concrete line-level edit the Council made to the plan (added / removed lines).
+function lineDiff(before: string, after: string): { added: string[]; removed: string[] } {
+  const b = new Set(before.split("\n").map((l) => l.trim()).filter(Boolean));
+  const a = new Set(after.split("\n").map((l) => l.trim()).filter(Boolean));
+  const added = [...a].filter((l) => !b.has(l));
+  const removed = [...b].filter((l) => !a.has(l));
+  return { added, removed };
 }
 
-// Parse the Reconciler's machine-readable seam count.
-function parseSeamCount(reconciled: string | null): number {
-  const m = reconciled?.match(/SEAMS_FOUND:\s*(\d+)/i);
-  return m ? parseInt(m[1], 10) : -1;
-}
-
-export async function run(jobPath: string, opts: RunOptions = {}): Promise<void> {
+export async function run(jobPath: string, _opts: RunOptions = {}): Promise<void> {
   const job = loadJob(jobPath);
   const goal = goalText(job);
 
-  banner(`ORCHESTRATOR — Step 4: base loop + store + swarm (fan-out + Reconciler)\njob: ${jobPath}`);
+  banner(`ORCHESTRATOR — Step 5: base loop + store + LLM Council\njob: ${jobPath}`);
 
   resetJobSlices();
   writeSlice("goal", goal);
-  provisionWorkspace();
   console.log(`  seeded store slice: goal (${goal.length} chars)`);
-  console.log(`  provisioned workspace: ${WORKSPACE_DIR}/{client,server}`);
-  if (job.council) console.log(`  (note) council:true is Step 5 — not wired yet, ignored for Step 4.`);
+  console.log(`  council trigger: ${job.council ? "council:true (convene once on the plan)" : "off"}`);
 
   // --- Stage 1: Explorer --> writes `explored` ----------------------------
-  banner("STAGE 1/4 · EXPLORER   (reads goal → writes explored)");
+  banner("STAGE 1/3 · EXPLORER   (reads goal → writes explored)");
   logSources2(await explore());
 
   // --- Stage 2: Planner --> writes `plan` ---------------------------------
-  banner("STAGE 2/4 · PLANNER    (reads goal + explored → writes plan)");
+  banner("STAGE 2/3 · PLANNER    (reads goal + explored → writes plan)");
   logSources2(await plan());
 
-  // --- Stage 3: FAN-OUT — Frontend || Backend, in parallel and BLIND ------
-  banner("STAGE 3/4 · FAN-OUT    (Frontend ∥ Backend, parallel + blind)");
-  console.log(`  divergence: ${opts.forceDivergence ? "FORCED (deliberate seam injected)" : "natural first"}`);
-  let fan = await runFanout(opts.forceDivergence ? { backendOverride: BACKEND_DIVERGENCE } : undefined);
-  const feS = summarizeSources(fan.frontend);
-  const beS = summarizeSources(fan.backend);
-  console.log("\n  [FRONTEND specialist]");
-  logSources(fan.frontend, feS);
-  console.log("\n  [BACKEND specialist]");
-  logSources(fan.backend, beS);
-
-  // --- Stage 4: RECONCILER — the Step 4 gate ------------------------------
-  banner("STAGE 4/4 · RECONCILER (reads frontend + backend → flags seams)   ← Step 4 gate");
-  let reconciledR = await reconcile();
-  logSources2(reconciledR);
-  let seamCount = parseSeamCount(readSlice("reconciled"));
-
-  // If the blind specialists happened to AGREE, fall back to a deliberate seam
-  // so the gate is exercised against a real disagreement either way.
-  let usedFallback = false;
-  if (seamCount === 0 && !opts.forceDivergence) {
-    usedFallback = true;
-    banner("FALLBACK · natural contracts agreed → injecting a deliberate divergence");
-    console.log("  re-running the Backend specialist with a conflicting contract, then re-reconciling…");
-    fan = { ...fan, backend: await runBackend({ backendOverride: BACKEND_DIVERGENCE }) };
-    console.log("\n  [BACKEND specialist — deliberate divergence]");
-    logSources(fan.backend, summarizeSources(fan.backend));
-    reconciledR = await reconcile();
-    console.log("\n  [RECONCILER — re-run]");
-    logSources2(reconciledR);
-    seamCount = parseSeamCount(readSlice("reconciled"));
+  if (!job.council) {
+    console.log("\n  (job did not request the Council; nothing to demonstrate for Step 5.)");
+    return;
   }
 
-  // --- The two contracts, side by side, and the Reconciler's verdict ------
-  banner("THE TWO CONTRACTS (built blind) + RECONCILER VERDICT");
-  console.log("── FRONTEND contract ──\n" + extractContract(readSlice("frontend")));
-  console.log("\n── BACKEND contract ──\n" + extractContract(readSlice("backend")));
-  console.log("\n── RECONCILER (`reconciled` slice) ──\n" + (readSlice("reconciled")?.trim() || "(empty)"));
+  // --- Stage 3: COUNCIL — 4 critics blind ∥, then Judge rules -------------
+  banner("STAGE 3/3 · COUNCIL    (4 critics ∥ blind → Judge rules)   ← Step 5 gate");
+  const council = await runCouncil();
+
+  console.log("\n  [CRITICS — fired in parallel, fresh context, blind to each other]");
+  for (const { role, result } of council.critics) {
+    const s = summarizeSources(result);
+    console.log(
+      `\n  🔹 ${role}  (model=${result.model}, ${result.ms} ms) — read: ${s.storeReads.join(", ") || "(none)"}, wrote: ${s.storeWrites.join(", ") || "(none)"}`
+    );
+    console.log("     verdict:\n" + indent(result.output));
+  }
+
+  console.log("\n  [JUDGE — ran last with all four verdicts]");
+  const js = summarizeSources(council.judge);
+  console.log(
+    `  ⚖️  judge  (model=${council.judge.model}, ${council.judge.ms} ms) — read: ${js.storeReads.join(", ") || "(none)"}, wrote: ${js.storeWrites.join(", ") || "(none)"}`
+  );
+  console.log("\n── JUDGE RULING (`council` slice) ──\n" + (readSlice("council")?.trim() || "(empty)"));
+
+  const diff = lineDiff(council.planBefore, council.planAfter);
+  banner("THE EDIT TO THE PLAN (before → after)");
+  console.log(`  plan: ${council.planBefore.length} chars → ${council.planAfter.length} chars`);
+  console.log(`  lines removed by the ruling: ${diff.removed.length}, lines added: ${diff.added.length}`);
+  console.log("\n  + ADDED (sample):");
+  for (const l of diff.added.slice(0, 12)) console.log(`    + ${l.slice(0, 160)}`);
+  if (diff.removed.length) {
+    console.log("\n  - REMOVED (sample):");
+    for (const l of diff.removed.slice(0, 6)) console.log(`    - ${l.slice(0, 160)}`);
+  }
 
   // --- Store contents after the run ---------------------------------------
   banner("SHARED STORE after run (Serena memories)");
@@ -249,38 +240,47 @@ export async function run(jobPath: string, opts: RunOptions = {}): Promise<void>
     console.log(`  ${s.padEnd(11)} : ${len > 0 ? `${len} chars` : "(empty)"}`);
   }
 
-  // --- STEP 4 GATE --------------------------------------------------------
-  banner("STEP 4 GATE — did the Reconciler catch a real integration seam?");
+  // --- STEP 5 GATE --------------------------------------------------------
+  banner("STEP 5 GATE — did the Council produce a real ruling that changes the plan?");
 
-  // Blindness: neither specialist read the other's slice.
-  const feBlind = !feS.storeReads.includes("backend");
-  const beBlind = !summarizeSources(fan.backend).storeReads.includes("frontend");
-  const bothBuilt =
-    (readSlice("frontend")?.trim().length ?? 0) > 0 && (readSlice("backend")?.trim().length ?? 0) > 0;
-  const reconcilerReadBoth =
-    summarizeSources(reconciledR).storeReads.includes("frontend") &&
-    summarizeSources(reconciledR).storeReads.includes("backend");
-  const caughtSeam = seamCount >= 1;
+  const ruling = readSlice("council") ?? "";
+  const allCriticsSpoke = council.critics.every((c) => c.result.output.trim().length > 0);
+  const criticsBlind = council.critics.every((c) => {
+    const reads = summarizeSources(c.result).storeReads;
+    return reads.every((r) => r === "goal" || r === "plan"); // saw only the plan + goal
+  });
+  const criticsWroteNothing = council.critics.every(
+    (c) => summarizeSources(c.result).storeWrites.length === 0
+  );
+  const judgeRuled = /RULING:/i.test(ruling);
+  const hedges = hedgesFound(ruling);
+  const planChanged =
+    council.planAfter.trim().length > 0 && council.planAfter.trim() !== council.planBefore.trim();
 
   const checks: [string, boolean][] = [
-    ["Both specialists produced a half + contract", bothBuilt],
-    ["Fan-out was BLIND (FE didn't read `backend`, BE didn't read `frontend`)", feBlind && beBlind],
-    ["Reconciler read BOTH sides (only agent that sees both)", reconcilerReadBoth],
-    [`Reconciler caught ≥1 real seam (found ${seamCount})`, caughtSeam],
+    ["All four critics produced a verdict", allCriticsSpoke],
+    ["Critics were BLIND (each read only goal+plan, wrote nothing)", criticsBlind && criticsWroteNothing],
+    ["Judge issued a RULING (not a summary)", judgeRuled],
+    [`Judge did NOT hedge (${hedges.length ? "found: " + hedges.join(", ") : "no hedge phrases"})`, hedges.length === 0],
+    ["The ruling CHANGED the plan slice", planChanged],
   ];
   for (const [label, ok] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
-  console.log(
-    `\n  seam source: ${usedFallback ? "DELIBERATE (blind halves agreed; fallback injected)" : "NATURAL (blind halves diverged on their own)"}`
-  );
 
   const passed = checks.every(([, ok]) => ok);
   console.log(
     "\n" +
       (passed
-        ? "  ✅ STEP 4 GATE PASSED — two blind specialists, a real payload-contract disagreement,\n" +
-          "     and the Reconciler caught it — a seam no single-side reviewer could see."
-        : "  ❌ STEP 4 GATE FAILED — see FAILs above.")
+        ? "  ✅ STEP 5 GATE PASSED — four blind critics, a Judge that ruled without hedging,\n" +
+          "     and a plan that actually changed as a result."
+        : "  ❌ STEP 5 GATE FAILED — see FAILs above.")
   );
 
   if (!passed) process.exitCode = 1;
+}
+
+function indent(s: string): string {
+  return s
+    .split("\n")
+    .map((l) => `       ${l}`)
+    .join("\n");
 }
