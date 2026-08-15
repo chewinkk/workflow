@@ -29,7 +29,10 @@ ln -sfn "${VOL}/claude" /root/.claude
 if [ -e /root/.claude.json ] && [ ! -L /root/.claude.json ]; then
   mv -n /root/.claude.json "${VOL}/claude.json" 2>/dev/null || true
 fi
-[ -e "${VOL}/claude.json" ] || : > "${VOL}/claude.json"
+# Seed VALID JSON when missing OR empty ('-s' = exists and non-empty). An empty
+# file makes `claude` fail with "Unexpected EOF"; `{}` is a valid default and
+# also auto-heals a previously-empty file on the next boot.
+[ -s "${VOL}/claude.json" ] || printf '{}\n' > "${VOL}/claude.json"
 ln -sfn "${VOL}/claude.json" /root/.claude.json
 
 # 1c) Serena project store (lives INSIDE the gitignored working tree) -> volume

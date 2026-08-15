@@ -20,7 +20,7 @@ step(){ printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 step "1/5  Persistent-volume symlinks (idempotent re-assert)"
 mkdir -p "$VOL/claude" "$VOL/serena/memories"
 ln -sfn "$VOL/claude" /root/.claude
-[ -e "$VOL/claude.json" ] || : > "$VOL/claude.json"
+[ -s "$VOL/claude.json" ] || printf '{}\n' > "$VOL/claude.json"   # valid JSON, not empty
 ln -sfn "$VOL/claude.json" /root/.claude.json
 [ -L "$APP/.serena" ] || { rm -rf "$APP/.serena"; ln -sfn "$VOL/serena" "$APP/.serena"; }
 [ "$(readlink /root/.claude)" = "$VOL/claude" ]           && ok "/root/.claude -> $VOL/claude"           || no "/root/.claude symlink wrong"
