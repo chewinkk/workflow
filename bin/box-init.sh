@@ -51,6 +51,20 @@ rm -rf "${APP}/workspace/.serena"
 ln -sfn "${VOL}/serena" "${APP}/workspace/.serena"
 echo "[box-init] ${APP}/workspace/src ready   |   ${APP}/workspace/.serena -> ${VOL}/serena (defensive)"
 
+# 1e) Playwright Chromium (baked at image build under /opt/pw-browsers). Export
+#     the lookup path defensively so the orchestrator + harness resolve it, and
+#     warn LOUDLY if the browser is absent — that means the image was built
+#     without the browser bake, and the frame-timing gate will fail to launch.
+#     box-init cannot conjure the binary (that would need a runtime download that
+#     defeats the bake and may be blocked by the network policy) — rebuild.
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/pw-browsers}"
+if ls "${PLAYWRIGHT_BROWSERS_PATH}"/chromium-*/chrome-linux/chrome >/dev/null 2>&1; then
+  echo "[box-init] Chromium present at ${PLAYWRIGHT_BROWSERS_PATH} (frame-timing gate can launch)"
+else
+  echo "[box-init] WARN: no Chromium under ${PLAYWRIGHT_BROWSERS_PATH} — the frame-timing gate will FAIL" >&2
+  echo "[box-init]        to launch. The browser is baked at image build; rebuild + redeploy the image." >&2
+fi
+
 # 2) Private access via Tailscale (recommended). Only if you supplied an authkey.
 if [ -n "${TS_AUTHKEY:-}" ]; then
   echo "[box-init] starting tailscale (userspace networking)"

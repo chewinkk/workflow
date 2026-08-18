@@ -11,7 +11,15 @@
 import { spawn } from "node:child_process";
 import { fixOnDisk } from "../pipeline/executor.js";
 import { replan } from "../pipeline/planner.js";
-import { buildCmd, testCmd, MAX_BOUNCES, workspaceTestFiles, type Cmd } from "./gates.js";
+import {
+  buildCmd,
+  testCmd,
+  MAX_BOUNCES,
+  workspaceTestFiles,
+  checkDeliverables,
+  deliverableErrorText,
+  type Cmd,
+} from "./gates.js";
 import { frameTimingGate, frameTimingErrorText, type FrameTimingResult } from "./frame-timing.js";
 
 const REPO_ROOT = process.cwd();
@@ -63,6 +71,12 @@ function errorText(run: CmdRun): string {
   return (run.stderr || run.stdout || `exit ${run.exitCode}`).slice(0, 4000);
 }
 
+// A synthetic CmdRun for tiers that are not a spawned command (preflight), so
+// they fit the same trace shape.
+function pseudoRun(command: string, detail: string): CmdRun {
+  return { label: command, command, exitCode: 1, stdout: detail, stderr: detail, ok: false };
+}
+
 // Represent a frame-timing gate result as a CmdRun so it fits the same trace shape.
 function timingCmdRun(t: FrameTimingResult): CmdRun {
   return {
@@ -86,6 +100,27 @@ export async function buildTestFix(): Promise<VerifyResult> {
   while (attempt <= MAX_BOUNCES) {
     attempt++;
 
+    // --- Tier 0: DELIVERABLE PREFLIGHT ------------------------------------
+    // Structural proof that the plan's mandated artifacts EXIST before we spend
+    // a build/browser cycle. A miss bounces to the Executor's deliverable mode
+    // (create what's missing) rather than the Planner — the plan is already
+    // correct; the specialists under-delivered against it.
+    const misses = checkDeliverables();
+    if (misses.length > 0) {
+      const codes = misses.map((m) => m.code).join(",");
+      const run = pseudoRun("deliverable preflight", `missing mandated deliverables: ${codes}`);
+      log(`\n  ▶ [attempt ${attempt}] deliverable preflight`);
+      log(`    MISSING: ${codes}`);
+      if (attempt > MAX_BOUNCES) {
+        trace.push({ attempt, run, action: "escalate-to-planner (deliverables still missing)" });
+        break;
+      }
+      log(`    ↳ bouncing missing deliverables to Executor to create…`);
+      const fix = await fixOnDisk("deliverable", deliverableErrorText(misses));
+      trace.push({ attempt, run, action: `executor-deliverable: ${fix.summary}` });
+      continue;
+    }
+
     // --- Tier 1: BUILD ----------------------------------------------------
     const build = await runCmd(buildCmd());
     log(`\n  ▶ [attempt ${attempt}] $ ${build.command}`);
@@ -103,10 +138,20 @@ export async function buildTestFix(): Promise<VerifyResult> {
     }
 
     // --- Tier 2: TEST -----------------------------------------------------
+    // Zero tests is a HARD FAIL, never a vacuous pass — the deliverable preflight
+    // already requires ≥1 test, so this is defense-in-depth for that guarantee.
     const testFiles = workspaceTestFiles();
     if (testFiles.length === 0) {
-      trace.push({ attempt, run: build, action: "build OK; no test files found" });
-      log(`    (no *.test.ts in workspace/src — build passes; proceeding to frame-timing gate)`);
+      const run = pseudoRun("test (node --test)", "no *.test.ts in workspace/src — node --test would pass vacuously");
+      log(`  ▶ [attempt ${attempt}] test discovery: no *.test.ts found (HARD FAIL — not a vacuous pass)`);
+      if (attempt > MAX_BOUNCES) {
+        trace.push({ attempt, run, action: "escalate-to-planner (no tests)" });
+        break;
+      }
+      log(`    ↳ bouncing missing tests to Executor…`);
+      const fix = await fixOnDisk("deliverable", deliverableErrorText(checkDeliverables()));
+      trace.push({ attempt, run, action: `executor-deliverable: ${fix.summary}` });
+      continue;
     } else {
       const test = await runCmd(testCmd(testFiles));
       log(`  ▶ [attempt ${attempt}] $ ${test.command}`);

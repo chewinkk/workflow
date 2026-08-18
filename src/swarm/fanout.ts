@@ -60,11 +60,20 @@ function frontend(): Promise<AgentResult> {
     "and DRIVE it under interaction, measuring real frame timing (worst frame must be <22ms and " +
     "<5% of frames may miss the 60fps budget), so it must actually render and animate. Produce:\n" +
     `  - ${WORKSPACE_SRC}/client/index.html — the login/signup markup and the glass CSS (frosted / ` +
-    "backdrop-filter treatment). Do NOT add your own <script> or bundler tag — the harness bundles " +
-    "and injects your entry for you.\n" +
+    "backdrop-filter treatment). It MUST include `<script type=\"module\" src=\"./main.js\"></script>` " +
+    "before </body>. The build emits main.js from your main.ts; a page with NO script tag is an inert, " +
+    "non-working app (signup/login never fires) and will be REJECTED. Reference ./main.js, never ./main.ts.\n" +
     `  - ${WORKSPACE_SRC}/client/main.ts — the interaction logic and the code that CALLS the auth ` +
     "backend over HTTP (pure TypeScript, explicit `.ts` import extensions, no native deps, browser-" +
     "targetable — no node:* imports in the client). Do not touch tsconfig.json.\n" +
+    `  - ${WORKSPACE_SRC}/client/perf.ts — REQUIRED (Council Step 6 mandate). Export ` +
+    "`classifyFrames(deltas: number[])` that classifies inter-frame deltas against the 60fps budget " +
+    "(e.g. counts frames that missed a refresh and the worst frame). In main.ts, wire a `?perfcheck=1` " +
+    "URL mode that samples frames, runs classifyFrames, and exposes the result on window (e.g. " +
+    "window.__perfResult). This probe is a mandated deliverable and is checked for existence.\n" +
+    `  - ${WORKSPACE_SRC}/client/*.test.ts — REQUIRED. At least one node:test file covering ` +
+    "classifyFrames (feed known-janky and known-smooth delta arrays, assert the classification). " +
+    "Zero test files is a hard failure.\n" +
     "Give the harness stable hooks: put data-testid=\"card\" on the glass card, data-testid=\"email\" and " +
     "data-testid=\"password\" on those inputs, data-testid=\"submit\" on the primary button, and " +
     "data-testid=\"toggle-mode\" on the login<->signup switch. Keep the animation smooth — animate " +
@@ -89,8 +98,16 @@ export function runBackend(div?: Divergence): Promise<AgentResult> {
     "and the memory named `plan`. Do NOT read the `frontend` memory — you are working " +
     "blind to the frontend team.\n" +
     `Build the auth BACKEND (signup, login, logout, session) as real files under ` +
-    `${WORKSPACE_SRC}/server/ (pure TypeScript with node:crypto + an in-memory store, ` +
-    "explicit `.ts` import extensions, no native deps, do not touch tsconfig.json).\n" +
+    `${WORKSPACE_SRC}/server/ (pure TypeScript with node:crypto, explicit \`.ts\` import extensions, ` +
+    "no native deps, do not touch tsconfig.json).\n" +
+    "Persistence is NOT in-memory. The Council ruled a file-backed `JsonFileUserStore` the DEFAULT: " +
+    "define a class `JsonFileUserStore` that persists users/sessions to a JSON file and reloads them on " +
+    "construction, and use it as the default store (an in-memory-only store will be REJECTED). Keep the " +
+    "JSON path configurable so tests can point it at a temp file.\n" +
+    `  - ${WORKSPACE_SRC}/server/*.test.ts — REQUIRED (zero test files is a hard failure). Cover with ` +
+    "node:test: a signup→login→session round-trip, a wrong-password rejection, and JsonFileUserStore " +
+    "DURABILITY — write a user, construct a FRESH JsonFileUserStore from the same file, assert the user " +
+    "survives.\n" +
     "Because you cannot see the frontend, YOU decide the exact HTTP auth contract your server " +
     "exposes. Then call write_memory to store the memory named `backend` containing a short " +
     "implementation summary followed by this exact block, filled in:\n\n" +

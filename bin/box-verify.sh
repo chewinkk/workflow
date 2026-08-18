@@ -35,6 +35,14 @@ mkdir -p "$APP/workspace/src"
 [ -d "$APP/workspace/src" ]                                       && ok "$APP/workspace/src present"                    || no "$APP/workspace/src missing"
 [ "$(readlink "$APP/workspace/.serena")" = "$VOL/serena" ]        && ok "$APP/workspace/.serena -> $VOL/serena (defensive)" || no "$APP/workspace/.serena symlink wrong"
 
+# Playwright Chromium (baked at /opt/pw-browsers by the Dockerfile) for the frame-timing gate.
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/pw-browsers}"
+if ls "$PLAYWRIGHT_BROWSERS_PATH"/chromium-*/chrome-linux/chrome >/dev/null 2>&1; then
+  ok "Chromium baked at $PLAYWRIGHT_BROWSERS_PATH (frame-timing gate can launch)"
+else
+  no "Chromium MISSING under $PLAYWRIGHT_BROWSERS_PATH — frame-timing gate cannot launch; rebuild the image (Dockerfile bakes it)"
+fi
+
 step "2/5  Serena baked at build (no runtime PyPI)"
 if command -v serena >/dev/null 2>&1; then
   ok "serena on PATH: $(command -v serena)"

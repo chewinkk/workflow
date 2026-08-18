@@ -35,13 +35,23 @@ export interface FixResult {
   summary: string;
 }
 
-// Called by the verifier with the REAL error from a failed build/test/frame-timing
-// tier. For "perf", errorText is the frame-timing harness's metrics + guidance.
-export async function fixOnDisk(phase: "build" | "test" | "perf", errorText: string): Promise<FixResult> {
+// Called by the verifier with the REAL error from a failed tier:
+//   - "build" / "test": the compiler / test-runner output.
+//   - "perf": the frame-timing harness's metrics + guidance.
+//   - "deliverable": the preflight gate's list of MISSING mandated artifacts
+//     (an inert page, a missing perf probe, zero tests, an in-memory store the
+//     Council overrode). Here the Executor CREATES what's missing, not just edits.
+export async function fixOnDisk(
+  phase: "build" | "test" | "perf" | "deliverable",
+  errorText: string
+): Promise<FixResult> {
   const intro =
     phase === "perf"
       ? "You are the Executor in UI-PERFORMANCE fix mode. The frame-timing gate measured the " +
         "liquid-glass UI running in a real browser under interaction and it is JANKY:\n\n"
+      : phase === "deliverable"
+      ? "You are the Executor in DELIVERABLE mode. The blind fan-out under-delivered against the " +
+        "ratified plan — mandated artifacts are missing and MUST be created:\n\n"
       : `You are the Executor in fix mode. The ${phase} just FAILED with this real error:\n\n`;
   const body =
     phase === "perf"
@@ -49,14 +59,23 @@ export async function fixOnDisk(phase: "build" | "test" | "perf", errorText: str
         "2) Make the MINIMAL change that brings both metrics under budget (animate transform/opacity " +
         "only, drop layout-triggering properties from the animation path, cut synchronous layout reads " +
         "in handlers, shrink backdrop-filter regions). Do not touch tsconfig.json. "
+      : phase === "deliverable"
+      ? `The code lives under ${WORKSPACE_SRC}/ (client/ and server/). ` +
+        "1) Read the existing client/server files so your additions fit the real code (endpoints, " +
+        "exports, the auth contract). 2) CREATE each missing item listed above exactly — the script " +
+        "tag in index.html referencing ./main.js, client/perf.ts exporting classifyFrames() plus a " +
+        "?perfcheck=1 mode in main.ts, real *.test.ts using node:test (auth round-trip, wrong-password, " +
+        "session, JsonFileUserStore durability across a simulated restart, classifyFrames), and a " +
+        "file-backed JsonFileUserStore in server/ used by default. Keep pure TypeScript with explicit " +
+        "`.ts` import extensions; do NOT touch tsconfig.json. "
       : `The code lives under ${WORKSPACE_SRC}/. ` +
         "1) Read the offending file(s) named in the error. " +
         "2) Make the MINIMAL edit that fixes this specific failure — do not rewrite unrelated code, " +
         "do not touch tsconfig.json. ";
   const directive =
     intro + "```\n" + errorText + "\n```\n\n" + body +
-    "3) Reply with one line naming the file(s) you edited and what you changed. " +
-    "Do not call write_memory; just fix the files.";
+    "3) Reply with one line naming the file(s) you created/edited and what you changed. " +
+    "Do not call write_memory; just write the files.";
   const r = await runAgent("executor", modelFor("executor"), directive, {
     extraTools: FILE_TOOLS,
     cwd: WORKSPACE_DIR,

@@ -44,6 +44,20 @@ RUN curl -fsSL https://tailscale.com/install.sh | sh
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
+
+# --- Playwright Chromium BAKED (for the frame-timing gate) ---------------
+# playwright-core does NOT download a browser during `npm ci`, but the
+# frame-timing harness (src/verify/frame-timing.ts) needs one at runtime.
+# Bake full Chromium + its headless shell + the required system libraries into
+# /opt/pw-browsers at build, and pin the runtime lookup path so both our
+# executablePath resolver AND Playwright's own fallback find it with no network
+# fetch. Without this, launch() falls back to /root/.cache/ms-playwright and
+# fails with "Executable doesn't exist ... headless_shell". Cached unless
+# package-lock.json (hence the playwright-core version) changes.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN node node_modules/playwright-core/cli.js install --with-deps chromium \
+    && ls -d /opt/pw-browsers/chromium-*/chrome-linux/chrome
+
 COPY . .
 RUN chmod +x bin/box-init.sh bin/serena-mcp.sh bin/box-verify.sh
 

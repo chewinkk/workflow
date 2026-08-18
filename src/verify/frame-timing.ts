@@ -22,7 +22,7 @@
 // of this gate is that "not laggy" cannot be dodged by simply not building the UI.
 
 import { createServer, type Server } from "node:http";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import {
   CLIENT_DIR,
@@ -55,11 +55,15 @@ const MIME: Record<string, string> = {
   ".json": "application/json",
 };
 
-// Resolve the real Chromium binary the environment pre-installed under
-// PLAYWRIGHT_BROWSERS_PATH so we never trigger a browser download.
+// Where the image bakes Chromium (Dockerfile: PLAYWRIGHT_BROWSERS_PATH).
+const DEFAULT_BROWSERS_PATH = "/opt/pw-browsers";
+
+// Resolve the full-Chromium binary the image baked, so launch() never triggers a
+// download and never falls back to /root/.cache/ms-playwright (which is empty on
+// the box). Falls back to the baked default path if the env var is somehow unset.
 function chromeExecutable(): string | undefined {
-  const base = process.env.PLAYWRIGHT_BROWSERS_PATH;
-  if (!base || !existsSync(base)) return undefined;
+  const base = process.env.PLAYWRIGHT_BROWSERS_PATH || DEFAULT_BROWSERS_PATH;
+  if (!existsSync(base)) return undefined;
   for (const d of readdirSync(base)) {
     if (d.startsWith("chromium-") && !d.includes("headless")) {
       const p = join(base, d, "chrome-linux", "chrome");
@@ -88,30 +92,15 @@ async function bundleClient(): Promise<string> {
   return file.text;
 }
 
-// index.html with our bundle injected before </body>. We own the script tag so
-// the frontend specialist just writes markup + styles and its logic in main.ts.
-function pageHtml(rawHtml: string): string {
-  const tag = `<script type="module" src="/__frame_bundle.js"></script>`;
-  if (rawHtml.includes("</body>")) return rawHtml.replace("</body>", `${tag}\n</body>`);
-  return rawHtml + `\n${tag}\n`;
-}
-
-function serve(html: string, bundle: string): Promise<{ server: Server; url: string }> {
+function serve(): Promise<{ server: Server; url: string }> {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
       const url = (req.url ?? "/").split("?")[0];
-      if (url === "/" || url === "/index.html") {
-        res.writeHead(200, { "content-type": MIME[".html"] });
-        res.end(html);
-        return;
-      }
-      if (url === "/__frame_bundle.js") {
-        res.writeHead(200, { "content-type": MIME[".js"] });
-        res.end(bundle);
-        return;
-      }
-      // Any other asset (css, images) is served straight from the client dir.
-      const assetPath = join(CLIENT_DIR, url.replace(/^\/+/, ""));
+      const rel = url === "/" || url === "/index.html" ? "index.html" : url.replace(/^\/+/, "");
+      // Everything is served straight from the client dir — index.html, the
+      // esbuild-emitted main.js (referenced by index.html's own <script>), CSS,
+      // assets. The app is self-contained: no harness-injected script tag.
+      const assetPath = join(CLIENT_DIR, rel);
       if (assetPath.startsWith(CLIENT_DIR) && existsSync(assetPath)) {
         res.writeHead(200, { "content-type": MIME[extname(assetPath)] ?? "application/octet-stream" });
         res.end(readFileSync(assetPath));
@@ -196,19 +185,27 @@ export async function frameTimingGate(): Promise<FrameTimingResult> {
   if (!existsSync(CLIENT_HTML)) return fail(`no client UI to measure: ${CLIENT_HTML} does not exist`);
   if (!existsSync(CLIENT_ENTRY)) return fail(`no client entry to bundle: ${CLIENT_ENTRY} does not exist`);
 
-  let bundle: string;
+  // Bundle main.ts and EMIT it to disk as main.js, so index.html's own
+  // <script type="module" src="./main.js"> resolves — both here under the harness
+  // and when the app is served standalone. The app is a real deliverable, not a
+  // harness-only artifact. (main.js is not *.ts, so tsc/node --test ignore it.)
   try {
-    bundle = await bundleClient();
+    const bundle = await bundleClient();
+    writeFileSync(join(CLIENT_DIR, "main.js"), bundle, "utf8");
   } catch (e) {
     return fail(`client failed to bundle for the browser: ${(e as Error).message}`);
   }
 
-  const { server, url } = await serve(pageHtml(readFileSync(CLIENT_HTML, "utf8")), bundle);
+  // Ensure Playwright's own resolution also finds the baked browser if our
+  // executablePath lookup ever returns undefined (headless-shell fallback).
+  if (!process.env.PLAYWRIGHT_BROWSERS_PATH) process.env.PLAYWRIGHT_BROWSERS_PATH = DEFAULT_BROWSERS_PATH;
+
+  const { server, url } = await serve();
 
   let browser: any;
   try {
     // playwright-core: no browser-download postinstall — we launch the Chromium the
-    // environment already provisioned under PLAYWRIGHT_BROWSERS_PATH via executablePath.
+    // image baked under PLAYWRIGHT_BROWSERS_PATH via executablePath.
     const { chromium } = await import("playwright-core");
     browser = await chromium.launch({ headless: true, executablePath: chromeExecutable() });
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
