@@ -95,9 +95,19 @@ export function runAgent(
       args.push("--disallowedTools", opts.disallowedTools.join(","));
     }
 
+    // Pin the Serena store to the orchestrator's OWN store dir for every agent,
+    // regardless of the agent's file-write cwd. bin/serena-mcp.sh resolves the
+    // project as ${SERENA_PROJECT:-$PWD}; without this, an agent spawned with
+    // cwd=WORKSPACE_DIR (the fan-out specialists, the apply/perf Executor) would
+    // make Serena resolve the store to <workspace>/.serena — a dead directory,
+    // NOT the volume-backed store the other agents and this process use. Setting
+    // SERENA_PROJECT to process.cwd() (the same base store/client.ts uses for
+    // MEM_DIR) decouples store location from cwd: cwd still contains stray file
+    // writes; SERENA_PROJECT owns where memories go. (This was the frontend/
+    // backend store split.)
     const child = spawn("claude", args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      env: { ...process.env, SERENA_PROJECT: process.cwd() },
       cwd: opts.cwd ?? REPO_ROOT,
     });
 

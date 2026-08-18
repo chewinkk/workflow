@@ -27,6 +27,22 @@ ln -sfn "$VOL/claude.json" /root/.claude.json
 [ "$(readlink /root/.claude.json)" = "$VOL/claude.json" ] && ok "/root/.claude.json -> $VOL/claude.json" || no "/root/.claude.json symlink wrong"
 [ "$(readlink "$APP/.serena")" = "$VOL/serena" ]          && ok "$APP/.serena -> $VOL/serena"            || no "$APP/.serena symlink wrong"
 
+# Workspace scaffolding + defensive store symlink (converge a running box without
+# a reboot). The harness rewrites workspace/tsconfig.json on every run, so we only
+# guarantee the tree + the defensive symlink here.
+mkdir -p "$APP/workspace/src"
+[ -L "$APP/workspace/.serena" ] || { rm -rf "$APP/workspace/.serena"; ln -sfn "$VOL/serena" "$APP/workspace/.serena"; }
+[ -d "$APP/workspace/src" ]                                       && ok "$APP/workspace/src present"                    || no "$APP/workspace/src missing"
+[ "$(readlink "$APP/workspace/.serena")" = "$VOL/serena" ]        && ok "$APP/workspace/.serena -> $VOL/serena (defensive)" || no "$APP/workspace/.serena symlink wrong"
+
+# Playwright Chromium (baked at /opt/pw-browsers by the Dockerfile) for the frame-timing gate.
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/pw-browsers}"
+if ls "$PLAYWRIGHT_BROWSERS_PATH"/chromium-*/chrome-linux/chrome >/dev/null 2>&1; then
+  ok "Chromium baked at $PLAYWRIGHT_BROWSERS_PATH (frame-timing gate can launch)"
+else
+  no "Chromium MISSING under $PLAYWRIGHT_BROWSERS_PATH — frame-timing gate cannot launch; rebuild the image (Dockerfile bakes it)"
+fi
+
 step "2/5  Serena baked at build (no runtime PyPI)"
 if command -v serena >/dev/null 2>&1; then
   ok "serena on PATH: $(command -v serena)"
