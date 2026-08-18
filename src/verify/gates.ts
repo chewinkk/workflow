@@ -7,6 +7,7 @@
 
 import { join } from "node:path";
 import { existsSync, readdirSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { readSlice } from "../store/client.js";
 
 export const WORKSPACE_DIR = join(process.cwd(), "workspace");
 export const WORKSPACE_SRC = join(WORKSPACE_DIR, "src");
@@ -105,7 +106,7 @@ export function ensureWorkspaceScaffold(): void {
 // so nothing can pass by simply not being built (e.g. a vacuous zero-test run,
 // an inert script-less page, or an in-memory store the Council overrode).
 export interface DeliverableMiss {
-  code: "A" | "B" | "C" | "D";
+  code: string;
   detail: string;
 }
 
@@ -174,6 +175,29 @@ export function checkDeliverables(): DeliverableMiss[] {
         `No JsonFileUserStore found under workspace/src/server. The Council ruled a file-backed ` +
         `JsonFileUserStore the DEFAULT (persist to JSON, reload on startup) with a durability test — ` +
         `not an in-memory store.`,
+    });
+  }
+
+  // E/F — each specialist MUST declare its AUTH PAYLOAD CONTRACT into its store
+  // slice (via write_memory). An empty slice means the specialist never engaged
+  // the store — the frontend did exactly this (globbed for the plan, never read
+  // it, never wrote its contract), which broke the reconciler and the reviewer.
+  if (!(readSlice("frontend") ?? "").trim()) {
+    misses.push({
+      code: "E",
+      detail:
+        `The \`frontend\` store slice is EMPTY — the frontend specialist never wrote its contract ` +
+        `(write_memory name="frontend"). Read the client code under workspace/src/client and write ` +
+        `memory \`frontend\`: a short summary + the "=== AUTH PAYLOAD CONTRACT ===" block for the ` +
+        `endpoints/fields/responses/session the client actually uses.`,
+    });
+  }
+  if (!(readSlice("backend") ?? "").trim()) {
+    misses.push({
+      code: "F",
+      detail:
+        `The \`backend\` store slice is EMPTY — write memory \`backend\` with a short summary + the ` +
+        `"=== AUTH PAYLOAD CONTRACT ===" block for the server's actual endpoints/fields/responses/session.`,
     });
   }
 

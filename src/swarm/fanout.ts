@@ -52,9 +52,13 @@ export interface Divergence {
 
 function frontend(): Promise<AgentResult> {
   const directive =
-    "You are the FRONTEND specialist in a blind fan-out. Read the memory named `goal` " +
-    "and the memory named `plan`. Do NOT read the `backend` memory — you are working " +
-    "blind to the backend team.\n" +
+    "You are the FRONTEND specialist in a blind fan-out. Your FIRST TWO actions MUST be tool " +
+    "calls: read_memory(name=\"goal\"), then read_memory(name=\"plan\") — the Serena MEMORY STORE, " +
+    "not the filesystem. Do NOT use Glob or Read to find goal/plan; only read_memory returns them. " +
+    "You MUST then FOLLOW the plan's performance rules exactly (animate only transform/opacity; " +
+    "exactly ONE backdrop-filter layer and promote it to its own layer with `will-change: transform`; " +
+    "never transition backdrop-filter/filter/box-shadow; provide the `@supports` fallback). Do NOT " +
+    "read the `backend` memory — you are working blind to the backend team.\n" +
     `Build the login + signup CLIENT as a REAL, BROWSER-RENDERABLE liquid-glass UI under ` +
     `${WORKSPACE_SRC}/client/. A downstream frame-timing harness will load this UI in Chromium ` +
     "and DRIVE it under interaction, measuring real frame timing (worst frame must be <22ms and " +
@@ -79,8 +83,10 @@ function frontend(): Promise<AgentResult> {
     "data-testid=\"toggle-mode\" on the login<->signup switch. Keep the animation smooth — animate " +
     "transform/opacity, avoid layout-triggering properties in the animation path.\n" +
     "Because you cannot see the backend, YOU decide the exact HTTP auth contract your client " +
-    "will call. Then call write_memory to store the memory named `frontend` containing a short " +
-    "implementation summary followed by this exact block, filled in:\n\n" +
+    "will call. Then you MUST call write_memory(name=\"frontend\", ...) — this is REQUIRED; a run " +
+    "where the `frontend` slice is empty FAILS the build. Store a short implementation summary " +
+    "(the files you wrote and the glass/perf approach you took) followed by this exact block, " +
+    "filled in with YOUR client's actual contract:\n\n" +
     CONTRACT_FORMAT +
     "\n\nDo not write any other memory." +
     DONT_VERIFY;
@@ -94,9 +100,10 @@ function frontend(): Promise<AgentResult> {
 
 export function runBackend(div?: Divergence): Promise<AgentResult> {
   const base =
-    "You are the BACKEND specialist in a blind fan-out. Read the memory named `goal` " +
-    "and the memory named `plan`. Do NOT read the `frontend` memory — you are working " +
-    "blind to the frontend team.\n" +
+    "You are the BACKEND specialist in a blind fan-out. Your FIRST TWO actions MUST be tool calls: " +
+    "read_memory(name=\"goal\"), then read_memory(name=\"plan\") — the Serena MEMORY STORE, not the " +
+    "filesystem (do NOT Glob/Read to find them). Follow the plan exactly. Do NOT read the `frontend` " +
+    "memory — you are working blind to the frontend team.\n" +
     `Build the auth BACKEND (signup, login, logout, session) as real files under ` +
     `${WORKSPACE_SRC}/server/ (pure TypeScript with node:crypto, explicit \`.ts\` import extensions, ` +
     "no native deps, do not touch tsconfig.json).\n" +
@@ -109,8 +116,9 @@ export function runBackend(div?: Divergence): Promise<AgentResult> {
     "DURABILITY — write a user, construct a FRESH JsonFileUserStore from the same file, assert the user " +
     "survives.\n" +
     "Because you cannot see the frontend, YOU decide the exact HTTP auth contract your server " +
-    "exposes. Then call write_memory to store the memory named `backend` containing a short " +
-    "implementation summary followed by this exact block, filled in:\n\n" +
+    "exposes. Then you MUST call write_memory(name=\"backend\", ...) — REQUIRED; an empty `backend` " +
+    "slice FAILS the build. Store a short implementation summary followed by this exact block, " +
+    "filled in:\n\n" +
     CONTRACT_FORMAT +
     "\n\nDo not write any other memory.";
   const directive =

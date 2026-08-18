@@ -11,6 +11,9 @@ import { modelFor } from "../models.js";
 import { WORKSPACE_DIR, WORKSPACE_SRC } from "../verify/gates.js";
 
 const FILE_TOOLS = ["Write", "Edit", "MultiEdit", "Read", "Glob", "Grep"];
+// The consolidation/fix Executor edits files + the store; it must NOT shell out
+// (build/verify is the harness's job) or spawn subagents — that's a containment leak.
+const NO_SHELL = ["Bash", "Task", "KillShell", "BashOutput"];
 
 export function buildToDisk(): Promise<AgentResult> {
   const directive =
@@ -67,17 +70,22 @@ export async function fixOnDisk(
         "?perfcheck=1 mode in main.ts, real *.test.ts using node:test (auth round-trip, wrong-password, " +
         "session, JsonFileUserStore durability across a simulated restart, classifyFrames), and a " +
         "file-backed JsonFileUserStore in server/ used by default. Keep pure TypeScript with explicit " +
-        "`.ts` import extensions; do NOT touch tsconfig.json. "
+        "`.ts` import extensions; do NOT touch tsconfig.json. For any EMPTY `frontend`/`backend` store " +
+        "slice listed above, call write_memory(name=\"frontend\"|\"backend\", ...) with a short summary " +
+        "plus the \"=== AUTH PAYLOAD CONTRACT ===\" block derived from the actual client/server code. "
       : `The code lives under ${WORKSPACE_SRC}/. ` +
         "1) Read the offending file(s) named in the error. " +
         "2) Make the MINIMAL edit that fixes this specific failure — do not rewrite unrelated code, " +
         "do not touch tsconfig.json. ";
-  const directive =
-    intro + "```\n" + errorText + "\n```\n\n" + body +
-    "3) Reply with one line naming the file(s) you created/edited and what you changed. " +
-    "Do not call write_memory; just write the files.";
+  const closing =
+    phase === "deliverable"
+      ? "3) Reply with one line naming what you created and which memory slices you wrote."
+      : "3) Reply with one line naming the file(s) you created/edited and what you changed. " +
+        "Do not call write_memory; just write the files.";
+  const directive = intro + "```\n" + errorText + "\n```\n\n" + body + closing;
   const r = await runAgent("executor", modelFor("executor"), directive, {
     extraTools: FILE_TOOLS,
+    disallowedTools: NO_SHELL,
     cwd: WORKSPACE_DIR,
   });
   return { summary: r.output.replace(/\s+/g, " ").slice(0, 200) || "(no summary)" };
@@ -98,11 +106,16 @@ export function applyReconciliation(): Promise<AgentResult> {
     "2) For EACH seam in `reconciled`, edit the on-disk files under workspace/src to make the client " +
     "and server agree on a single contract — prefer the reconciliation the Reconciler named. Make " +
     "MINIMAL edits; do NOT rebuild from scratch, do NOT touch tsconfig.json, keep pure TS with explicit " +
-    "`.ts` import extensions. If `reconciled` says SEAMS_FOUND: 0, change nothing.\n" +
-    "3) Call write_memory to store `done`: list each file you touched and each seam you closed (or " +
-    "state that the contracts already agreed).";
+    "`.ts` import extensions. If `reconciled` says SEAMS_FOUND: 0, change nothing in the code.\n" +
+    "3) Call write_memory to store `done` as a REAL BUILD SUMMARY the Reviewer can verify each " +
+    "acceptance criterion against — not just a seam note. Read the actual files first and cover: the " +
+    "CLIENT (index.html + glass treatment, main.js script tag, perf.ts/classifyFrames + ?perfcheck=1), " +
+    "the SERVER (auth, JsonFileUserStore persistence, session/secret handling), the TESTS that exist, " +
+    "the seams you closed, and which files you touched. Be concrete (name files); this slice is the " +
+    "Reviewer's evidence.";
   return runAgent("executor", modelFor("executor"), directive, {
     extraTools: FILE_TOOLS,
+    disallowedTools: NO_SHELL,
     cwd: WORKSPACE_DIR,
   });
 }
