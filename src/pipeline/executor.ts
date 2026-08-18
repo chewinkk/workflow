@@ -65,14 +65,13 @@ export async function fixOnDisk(
       : phase === "deliverable"
       ? `The code lives under ${WORKSPACE_SRC}/ (client/ and server/). ` +
         "1) Read the existing client/server files so your additions fit the real code (endpoints, " +
-        "exports, the auth contract). 2) CREATE each missing item listed above exactly — the script " +
-        "tag in index.html referencing ./main.js, client/perf.ts exporting classifyFrames() plus a " +
-        "?perfcheck=1 mode in main.ts, real *.test.ts using node:test (auth round-trip, wrong-password, " +
-        "session, JsonFileUserStore durability across a simulated restart, classifyFrames), and a " +
-        "file-backed JsonFileUserStore in server/ used by default. Keep pure TypeScript with explicit " +
+        "exports, the API contract). 2) CREATE each missing item listed above EXACTLY as its detail " +
+        "describes — e.g. the script tag in index.html referencing ./main.js, client/perf.ts exporting " +
+        "classifyFrames() plus a ?perfcheck=1 mode in main.ts, and real *.test.ts using node:test " +
+        "covering classifyFrames plus the plan's core behavior. Keep pure TypeScript with explicit " +
         "`.ts` import extensions; do NOT touch tsconfig.json. For any EMPTY `frontend`/`backend` store " +
         "slice listed above, call write_memory(name=\"frontend\"|\"backend\", ...) with a short summary " +
-        "plus the \"=== AUTH PAYLOAD CONTRACT ===\" block derived from the actual client/server code. "
+        "plus the \"=== API CONTRACT ===\" block derived from the actual client/server code. "
       : `The code lives under ${WORKSPACE_SRC}/. ` +
         "1) Read the offending file(s) named in the error. " +
         "2) Make the MINIMAL edit that fixes this specific failure — do not rewrite unrelated code, " +
@@ -101,7 +100,7 @@ export function applyReconciliation(): Promise<AgentResult> {
   const directive =
     "You are the Executor in CONSOLIDATION mode after a blind fan-out. The Frontend and Backend " +
     "specialists each built their half under workspace/src/{client,server}; the Reconciler compared " +
-    "their AUTH PAYLOAD CONTRACT blocks.\n" +
+    "their API CONTRACT blocks.\n" +
     "1) Call read_memory on `reconciled` (the seam list), then on `frontend` and `backend` for context.\n" +
     "2) For EACH seam in `reconciled`, edit the on-disk files under workspace/src to make the client " +
     "and server agree on a single contract — prefer the reconciliation the Reconciler named. Make " +
@@ -109,8 +108,8 @@ export function applyReconciliation(): Promise<AgentResult> {
     "`.ts` import extensions. If `reconciled` says SEAMS_FOUND: 0, change nothing in the code.\n" +
     "3) Call write_memory to store `done` as a REAL BUILD SUMMARY the Reviewer can verify each " +
     "acceptance criterion against — not just a seam note. Read the actual files first and cover: the " +
-    "CLIENT (index.html + glass treatment, main.js script tag, perf.ts/classifyFrames + ?perfcheck=1), " +
-    "the SERVER (auth, JsonFileUserStore persistence, session/secret handling), the TESTS that exist, " +
+    "CLIENT (index.html + UI/styling treatment, main.js script tag, perf.ts/classifyFrames + ?perfcheck=1), " +
+    "the SERVER (endpoints, data/seed/persistence, pagination + filters), the TESTS that exist, " +
     "the seams you closed, and which files you touched. Be concrete (name files); this slice is the " +
     "Reviewer's evidence.";
   return runAgent("executor", modelFor("executor"), directive, {

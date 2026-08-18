@@ -1,7 +1,7 @@
 // Swarm fan-out (spec §2/§6). The single Executor role fans out into parallel
 // specialists. In Step 4 that is Frontend + Backend, run in PARALLEL and BLIND:
 // each reads only `goal`+`plan` from the store, builds its half to disk, and
-// declares its own assumed auth payload contract into its own slice. Neither
+// declares its own assumed API contract into its own slice. Neither
 // reads the other's slice — that blindness is what makes the Reconciler's job
 // real (it catches seams no single reviewer, seeing one side, could).
 //
@@ -28,15 +28,17 @@ const DONT_VERIFY =
   "write the source files and your contract memory; the harness verifies the build.";
 
 // The fixed shape both specialists must fill in, so the Reconciler can diff them.
+// Generic across app types: whatever HTTP surface the plan calls for (auth,
+// a data API, a static server + JSON endpoints, ...), both sides declare it in
+// this same shape so their assumptions can be diffed at the seam.
 export const CONTRACT_FORMAT = [
-  "=== AUTH PAYLOAD CONTRACT ===",
-  "signup_endpoint: <METHOD> <path>",
-  "login_endpoint: <METHOD> <path>",
-  "logout_endpoint: <METHOD> <path>",
-  "request_fields: <exact JSON body your client sends / your server expects>",
-  "success_response: <status code> <exact JSON shape>",
+  "=== API CONTRACT ===",
+  "endpoints: <one line per endpoint: <METHOD> <path> — <what it does>>",
+  "request_fields: <for each endpoint, the exact query params / JSON body the client sends and the server expects>",
+  "success_response: <status code> <exact JSON shape (or content-type for static assets)>",
   "error_response: <status code> <exact JSON shape>",
-  "session_mechanism: <httpOnly cookie | bearer token in body | ...>",
+  "data_model: <the shape of the core records exchanged (e.g. a listing, a user) as exact field names + types>",
+  "state_mechanism: <how state/session/pagination is carried: httpOnly cookie | bearer token | query cursor | page+pageSize | stateless | ...>",
   "=== END CONTRACT ===",
 ].join("\n");
 
@@ -55,37 +57,44 @@ function frontend(): Promise<AgentResult> {
     "You are the FRONTEND specialist in a blind fan-out. Your FIRST TWO actions MUST be tool " +
     "calls: read_memory(name=\"goal\"), then read_memory(name=\"plan\") — the Serena MEMORY STORE, " +
     "not the filesystem. Do NOT use Glob or Read to find goal/plan; only read_memory returns them. " +
-    "You MUST then FOLLOW the plan's performance rules exactly (animate only transform/opacity; " +
-    "exactly ONE backdrop-filter layer and promote it to its own layer with `will-change: transform`; " +
-    "never transition backdrop-filter/filter/box-shadow; provide the `@supports` fallback). Do NOT " +
-    "read the `backend` memory — you are working blind to the backend team.\n" +
-    `Build the login + signup CLIENT as a REAL, BROWSER-RENDERABLE liquid-glass UI under ` +
-    `${WORKSPACE_SRC}/client/. A downstream frame-timing harness will load this UI in Chromium ` +
-    "and DRIVE it under interaction, measuring real frame timing (worst frame must be <22ms and " +
-    "<5% of frames may miss the 60fps budget), so it must actually render and animate. Produce:\n" +
-    `  - ${WORKSPACE_SRC}/client/index.html — the login/signup markup and the glass CSS (frosted / ` +
-    "backdrop-filter treatment). It MUST include `<script type=\"module\" src=\"./main.js\"></script>` " +
+    "BUILD EXACTLY WHAT THE PLAN DESCRIBES — the plan is the spec; do not invent a different app. " +
+    "You MUST FOLLOW the plan's performance rules exactly (animate only transform/opacity; keep " +
+    "backdrop-filter / heavy GPU layers promoted to their own layer with `will-change: transform`; " +
+    "never transition backdrop-filter/filter/box-shadow; provide any `@supports` fallback the plan " +
+    "names). Do NOT read the `backend` memory — you are working blind to the backend team.\n" +
+    `Build the CLIENT as a REAL, BROWSER-RENDERABLE UI under ${WORKSPACE_SRC}/client/, implementing ` +
+    "the exact screens, controls, and interactions the plan calls for. A downstream frame-timing " +
+    "harness will load this UI in Chromium and DRIVE it under interaction (scrolling, clicking " +
+    "buttons/links/chips), measuring real frame timing (worst frame must be <22ms and <5% of frames " +
+    "may miss the 60fps budget), so it must actually render and animate. Produce:\n" +
+    `  - ${WORKSPACE_SRC}/client/index.html — the markup and CSS for the UI the plan describes. ` +
+    "It MUST include `<script type=\"module\" src=\"./main.js\"></script>` " +
     "before </body>. The build emits main.js from your main.ts; a page with NO script tag is an inert, " +
-    "non-working app (signup/login never fires) and will be REJECTED. Reference ./main.js, never ./main.ts.\n" +
-    `  - ${WORKSPACE_SRC}/client/main.ts — the interaction logic and the code that CALLS the auth ` +
+    "non-working app and will be REJECTED. Reference ./main.js, never ./main.ts.\n" +
+    `  - ${WORKSPACE_SRC}/client/main.ts — the interaction logic and any code that CALLS the ` +
     "backend over HTTP (pure TypeScript, explicit `.ts` import extensions, no native deps, browser-" +
     "targetable — no node:* imports in the client). Do not touch tsconfig.json.\n" +
+    "  - If the plan VENDORS a library (e.g. a file under client/lib/), IMPORT and USE it — read its " +
+    "source/typings to wire it correctly. Do NOT reimplement a vendored library from scratch.\n" +
     `  - ${WORKSPACE_SRC}/client/perf.ts — REQUIRED (Council Step 6 mandate). Export ` +
     "`classifyFrames(deltas: number[])` that classifies inter-frame deltas against the 60fps budget " +
     "(e.g. counts frames that missed a refresh and the worst frame). In main.ts, wire a `?perfcheck=1` " +
     "URL mode that samples frames, runs classifyFrames, and exposes the result on window (e.g. " +
     "window.__perfResult). This probe is a mandated deliverable and is checked for existence.\n" +
     `  - ${WORKSPACE_SRC}/client/*.test.ts — REQUIRED. At least one node:test file covering ` +
-    "classifyFrames (feed known-janky and known-smooth delta arrays, assert the classification). " +
+    "classifyFrames (feed known-janky and known-smooth delta arrays, assert the classification), plus " +
+    "any pure client logic the plan calls for (e.g. filter/pagination helpers). " +
     "Zero test files is a hard failure.\n" +
-    "Give the harness stable hooks: put data-testid=\"card\" on the glass card, data-testid=\"email\" and " +
-    "data-testid=\"password\" on those inputs, data-testid=\"submit\" on the primary button, and " +
-    "data-testid=\"toggle-mode\" on the login<->signup switch. Keep the animation smooth — animate " +
-    "transform/opacity, avoid layout-triggering properties in the animation path.\n" +
-    "Because you cannot see the backend, YOU decide the exact HTTP auth contract your client " +
-    "will call. Then you MUST call write_memory(name=\"frontend\", ...) — this is REQUIRED; a run " +
+    "Give the harness stable hooks: put a `data-testid` on the main content container and on the " +
+    "primary interactive controls the plan describes (e.g. the main card/panel, primary inputs, the " +
+    "primary action button, and any pagination / filter / toggle controls) so the harness can drive " +
+    "them. Keep the animation smooth — animate transform/opacity, avoid layout-triggering properties " +
+    "in the animation path.\n" +
+    "Because you cannot see the backend, YOU decide the exact HTTP contract your client " +
+    "will call (endpoints, query params, JSON shapes). Then you MUST call " +
+    "write_memory(name=\"frontend\", ...) — this is REQUIRED; a run " +
     "where the `frontend` slice is empty FAILS the build. Store a short implementation summary " +
-    "(the files you wrote and the glass/perf approach you took) followed by this exact block, " +
+    "(the files you wrote and the UI/perf approach you took) followed by this exact block, " +
     "filled in with YOUR client's actual contract:\n\n" +
     CONTRACT_FORMAT +
     "\n\nDo not write any other memory." +
@@ -102,23 +111,23 @@ export function runBackend(div?: Divergence): Promise<AgentResult> {
   const base =
     "You are the BACKEND specialist in a blind fan-out. Your FIRST TWO actions MUST be tool calls: " +
     "read_memory(name=\"goal\"), then read_memory(name=\"plan\") — the Serena MEMORY STORE, not the " +
-    "filesystem (do NOT Glob/Read to find them). Follow the plan exactly. Do NOT read the `frontend` " +
-    "memory — you are working blind to the frontend team.\n" +
-    `Build the auth BACKEND (signup, login, logout, session) as real files under ` +
-    `${WORKSPACE_SRC}/server/ (pure TypeScript with node:crypto, explicit \`.ts\` import extensions, ` +
-    "no native deps, do not touch tsconfig.json).\n" +
-    "Persistence is NOT in-memory. The Council ruled a file-backed `JsonFileUserStore` the DEFAULT: " +
-    "define a class `JsonFileUserStore` that persists users/sessions to a JSON file and reloads them on " +
-    "construction, and use it as the default store (an in-memory-only store will be REJECTED). Keep the " +
-    "JSON path configurable so tests can point it at a temp file.\n" +
-    `  - ${WORKSPACE_SRC}/server/*.test.ts — REQUIRED (zero test files is a hard failure). Cover with ` +
-    "node:test: a signup→login→session round-trip, a wrong-password rejection, and JsonFileUserStore " +
-    "DURABILITY — write a user, construct a FRESH JsonFileUserStore from the same file, assert the user " +
-    "survives.\n" +
-    "Because you cannot see the frontend, YOU decide the exact HTTP auth contract your server " +
-    "exposes. Then you MUST call write_memory(name=\"backend\", ...) — REQUIRED; an empty `backend` " +
-    "slice FAILS the build. Store a short implementation summary followed by this exact block, " +
-    "filled in:\n\n" +
+    "filesystem (do NOT Glob/Read to find them). BUILD EXACTLY WHAT THE PLAN DESCRIBES — the plan is " +
+    "the spec. Do NOT read the `frontend` memory — you are working blind to the frontend team.\n" +
+    `Build the BACKEND exactly as the plan calls for, as real files under ` +
+    `${WORKSPACE_SRC}/server/ (pure TypeScript, prefer Node built-ins like node:http / node:crypto, ` +
+    "explicit `.ts` import extensions, no native deps, do not touch tsconfig.json). Common shapes the " +
+    "plan may call for: a static file server that serves the client build, and/or JSON API endpoints " +
+    "(e.g. a listings/data endpoint that returns seeded fake data with pagination + filtering). " +
+    "Implement whatever the plan specifies — do not assume auth unless the plan asks for it.\n" +
+    "If the plan requires SEEDED fake data, generate it deterministically (a fixed seed, no reliance " +
+    "on Math.random at request time) so results are stable and paginable.\n" +
+    `  - ${WORKSPACE_SRC}/server/*.test.ts — REQUIRED (zero test files is a hard failure). Cover the ` +
+    "server's real behavior with node:test — e.g. the endpoints return the expected shapes, and " +
+    "pagination + each filter the plan defines actually narrows/pages the data correctly.\n" +
+    "Because you cannot see the frontend, YOU decide the exact HTTP contract your server " +
+    "exposes (endpoints, query params, JSON shapes). Then you MUST call write_memory(name=\"backend\", " +
+    "...) — REQUIRED; an empty `backend` slice FAILS the build. Store a short implementation summary " +
+    "followed by this exact block, filled in:\n\n" +
     CONTRACT_FORMAT +
     "\n\nDo not write any other memory.";
   const directive =

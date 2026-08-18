@@ -23,9 +23,10 @@ export function reconcile(): Promise<AgentResult> {
     "three steps and nothing else:\n" +
     "STEP 1: call read_memory on `frontend`.\n" +
     "STEP 2: call read_memory on `backend`.\n" +
-    "STEP 3: compare their two `AUTH PAYLOAD CONTRACT` blocks field by field (endpoint " +
+    "STEP 3: compare their two `API CONTRACT` blocks field by field (endpoint " +
     "methods/paths, request field names, success/error response shapes and status codes, " +
-    "session mechanism), then call write_memory to store the memory named `reconciled`.\n\n" +
+    "data model field names/types, state/pagination mechanism), then call write_memory to " +
+    "store the memory named `reconciled`.\n\n" +
     "The `reconciled` content MUST begin with a single line:\n" +
     "  SEAMS_FOUND: <number>\n" +
     "then, for each seam, a line:\n" +

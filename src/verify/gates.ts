@@ -6,7 +6,15 @@
 // verification loop about the code, not about tsconfig flags.
 
 import { join } from "node:path";
-import { existsSync, readdirSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  cpSync,
+} from "node:fs";
 import { readSlice } from "../store/client.js";
 
 export const WORKSPACE_DIR = join(process.cwd(), "workspace");
@@ -20,6 +28,16 @@ export const WORKSPACE_SRC = join(WORKSPACE_DIR, "src");
 export const CLIENT_DIR = join(WORKSPACE_SRC, "client");
 export const CLIENT_HTML = join(CLIENT_DIR, "index.html");
 export const CLIENT_ENTRY = join(CLIENT_DIR, "main.ts");
+// Vendored libraries live in the REPO under vendor/ (committed, so present in the
+// deployed image). The harness copies them into the client build tree so the
+// frontend specialist can `import ... from "./lib/<name>"` and the esbuild bundle
+// + tsc can resolve them. This is how a plan "vendors a library": the file is a
+// harness-provisioned given, not something a specialist must author or fetch.
+export const VENDOR_DIR = join(process.cwd(), "vendor");
+export const CLIENT_LIB_DIR = join(CLIENT_DIR, "lib");
+// Files copied from vendor/ into client/lib/ when present. Extend as more libs
+// are vendored. (.js is the runtime module; .d.ts gives tsc its types.)
+const VENDORED_LIB_FILES = ["liquidgl.js", "liquidgl.d.ts"];
 
 // Frame-timing budget (spec §7 acceptance: "No jank: animation holds frame budget
 // under interaction"; Council ruling: worst frame < 22ms, dropped-frame ratio < 5%).
@@ -94,6 +112,32 @@ export const WORKSPACE_TSCONFIG_PATH = join(WORKSPACE_DIR, "tsconfig.json");
 export function ensureWorkspaceScaffold(): void {
   mkdirSync(WORKSPACE_SRC, { recursive: true });
   writeFileSync(WORKSPACE_TSCONFIG_PATH, WORKSPACE_TSCONFIG + "\n", "utf8");
+  provisionVendoredLibs();
+}
+
+// Copy any vendored libraries from the repo's vendor/ into the client build tree
+// (client/lib/). Idempotent and always-overwrite so the client's `./lib/<name>`
+// import resolves to the real, current library. Silently no-ops if vendor/ or a
+// given file is absent (not every job vendors a library).
+export function provisionVendoredLibs(): void {
+  if (!existsSync(VENDOR_DIR)) return;
+  let copiedAny = false;
+  for (const f of VENDORED_LIB_FILES) {
+    const from = join(VENDOR_DIR, f);
+    if (!existsSync(from)) continue;
+    if (!copiedAny) mkdirSync(CLIENT_LIB_DIR, { recursive: true });
+    cpSync(from, join(CLIENT_LIB_DIR, f));
+    copiedAny = true;
+  }
+}
+
+// Remove the previous build's source tree so a new full build never inherits stale
+// files (e.g. a prior job's client/server/tests that would break tsc or run as
+// dead tests). The harness re-scaffolds (tsconfig + vendored libs) immediately
+// after. The vendored libs are re-provisioned from the repo, so wiping them here
+// is safe. Only the gitignored workspace/src is touched — never the repo sources.
+export function resetWorkspaceSrc(): void {
+  rmSync(WORKSPACE_SRC, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -120,17 +164,16 @@ export function checkDeliverables(): DeliverableMiss[] {
   const mainSrc = readIf(CLIENT_ENTRY);
   const perfPath = join(CLIENT_DIR, "perf.ts");
   const perfSrc = readIf(perfPath);
-  const serverDir = join(WORKSPACE_SRC, "server");
 
   // A — the app must be self-contained: index.html references a real ./main.js
-  // (the harness emits it from main.ts). No script tag ⇒ an inert page that never
-  // fires signup/login in a real browser.
+  // (the harness emits it from main.ts). No script tag ⇒ an inert page whose
+  // interactions never fire in a real browser.
   if (!/<script\b[^>]*\bsrc\s*=\s*["']\.?\/?main\.js["']/i.test(html)) {
     misses.push({
       code: "A",
       detail:
-        `${CLIENT_HTML} has no <script type="module" src="./main.js"> — the form is inert in a ` +
-        `real browser (signup/login never fires). Add the module script tag referencing ./main.js.`,
+        `${CLIENT_HTML} has no <script type="module" src="./main.js"> — the page is inert in a ` +
+        `real browser (its interactions never fire). Add the module script tag referencing ./main.js.`,
     });
   }
 
@@ -159,45 +202,31 @@ export function checkDeliverables(): DeliverableMiss[] {
       code: "C",
       detail:
         `No *.test.ts anywhere in workspace/src — node --test would pass vacuously. Add tests covering: ` +
-        `signup/login/session round-trip, wrong-password rejection, JsonFileUserStore durability, and classifyFrames.`,
+        `classifyFrames, plus the core behavior the plan defines (e.g. the server's endpoints/pagination/` +
+        `filters, or the client's filter/pagination helpers).`,
     });
   }
 
-  // D — the Council ruled file-backed persistence the DEFAULT; an in-memory-only
-  // backend does not satisfy the plan.
-  const hasJsonStore =
-    existsSync(serverDir) &&
-    walkWorkspaceTs().some((f) => f.startsWith(serverDir + "/") && /JsonFileUserStore/.test(readIf(f)));
-  if (!hasJsonStore) {
+  // D/E — each specialist MUST declare its API CONTRACT into its store slice (via
+  // write_memory). An empty slice means the specialist never engaged the store —
+  // the frontend has done exactly this (globbed for the plan, never read it, never
+  // wrote its contract), which breaks the reconciler and the reviewer.
+  if (!(readSlice("frontend") ?? "").trim()) {
     misses.push({
       code: "D",
       detail:
-        `No JsonFileUserStore found under workspace/src/server. The Council ruled a file-backed ` +
-        `JsonFileUserStore the DEFAULT (persist to JSON, reload on startup) with a durability test — ` +
-        `not an in-memory store.`,
-    });
-  }
-
-  // E/F — each specialist MUST declare its AUTH PAYLOAD CONTRACT into its store
-  // slice (via write_memory). An empty slice means the specialist never engaged
-  // the store — the frontend did exactly this (globbed for the plan, never read
-  // it, never wrote its contract), which broke the reconciler and the reviewer.
-  if (!(readSlice("frontend") ?? "").trim()) {
-    misses.push({
-      code: "E",
-      detail:
         `The \`frontend\` store slice is EMPTY — the frontend specialist never wrote its contract ` +
         `(write_memory name="frontend"). Read the client code under workspace/src/client and write ` +
-        `memory \`frontend\`: a short summary + the "=== AUTH PAYLOAD CONTRACT ===" block for the ` +
-        `endpoints/fields/responses/session the client actually uses.`,
+        `memory \`frontend\`: a short summary + the "=== API CONTRACT ===" block for the ` +
+        `endpoints/fields/responses/state the client actually uses.`,
     });
   }
   if (!(readSlice("backend") ?? "").trim()) {
     misses.push({
-      code: "F",
+      code: "E",
       detail:
         `The \`backend\` store slice is EMPTY — write memory \`backend\` with a short summary + the ` +
-        `"=== AUTH PAYLOAD CONTRACT ===" block for the server's actual endpoints/fields/responses/session.`,
+        `"=== API CONTRACT ===" block for the server's actual endpoints/fields/responses/state.`,
     });
   }
 

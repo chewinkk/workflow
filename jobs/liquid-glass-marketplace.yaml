@@ -1,0 +1,49 @@
+goal: >
+  Build a rep/streetwear MARKETPLACE web app with a liquid-glass aesthetic that is
+  NOT laggy. Shoppers browse seeded fake listings with paged pagination, narrow them
+  with a full filter rail (Brand, Category, Condition, Quality, Quantity), and can
+  post their own product through a modal. The whole UI is rendered as real liquid
+  glass using the VENDORED liquidGL library, with user-facing effect controls and two
+  live animated WebGL wallpapers behind the glass.
+
+constraints:
+  # --- The real library, vendored (NOT reimplemented) ---
+  - "The liquidGL library is VENDORED at workspace/src/client/lib/liquidgl.js (with liquidgl.d.ts typings). IMPORT and USE it — `import liquidGL from \"./lib/liquidgl.js\"` — to create the glass. Do NOT reimplement liquid glass by hand and do NOT fetch it from a CDN. Read the typings (LiquidGLOptions) to wire it: it takes { target, snapshot, resolution, refraction, aberration, bevelDepth, bevelWidth, frost, shadow, specular, reveal, tilt, magnify, on:{init} } and exposes liquidGL.registerDynamic() and liquidGL.syncWith()."
+  - "This is served as a REAL web app (static server + browser), NOT a Claude Artifact — there is no CSP blocking the library, so use it directly."
+
+  # --- The catalog + pagination ---
+  - "Seed a realistic catalog of fake streetwear/rep listings DETERMINISTICALLY (fixed seed — no Math.random at request time) so pages are stable and paginable. Each listing carries: id, title, brand, category, price, condition, quality, quantity (units in stock), sizes (with per-size stock), an image URL (placeholder is fine), and a `passing` boolean. Aim for enough listings (e.g. 60–120) to page through."
+  - "PAGED pagination (numbered pages with prev/next), not infinite scroll. Page size is fixed (e.g. 12 or 24). Pagination must reflect the ACTIVE filter set (the total page count changes as filters narrow the results)."
+
+  # --- The filter rail ---
+  - "Brand filter: multi-select over the brands present in the catalog."
+  - "Category filter: multi-select over the categories present in the catalog."
+  - "Condition filter: exactly these options — New with tags, New without tags, Excellent, Very good, Good, Fair."
+  - "Quality filter: exactly these options — Authentic, OEM, Pristine Clone, Super Clone, Mid Quality, Low Quality. Plus a single 'Passing' toggle that, when ON, keeps only listings marked passing; the Passing toggle applies ONLY to the Authentic, OEM, Pristine Clone and Super Clone qualities (it has no effect on Mid Quality / Low Quality listings)."
+  - "Quantity filter: Any quantity, In stock (+1) meaning quantity >= 1, 5+ meaning quantity >= 5, 10+ meaning quantity >= 10, and a Custom amount input meaning quantity >= the entered number."
+  - "Filters COMBINE (logical AND across filter types, OR within a multi-select). Changing any filter resets to page 1 and re-derives the page count."
+
+  # --- Post a product ---
+  - "A 'Post a product' button opens a MODAL with these fields, in this order: Title, Description, Brand, Category, Price, Condition, Dimensions, Item quality, Sizes & stock (add size chips, each chip carries a size label + a stock number), Source images (an 'add photo' control AND a 'paste image URL' input), and Cancel / Post actions at the bottom. Posting a valid product prepends it to the catalog (client-side is acceptable) and closes the modal; Cancel discards."
+
+  # --- Liquid glass surfaces + controls + wallpapers ---
+  - "Build the UI OUT OF liquid glass: the top bar, the filter rail, the listing cards, the pagination bar, and the post-product modal are liquidGL glass surfaces layered over the wallpaper. Register scrolling/animated content as dynamic so the refraction stays live (liquidGL.registerDynamic)."
+  - "Expose USER-FACING effect controls on the site (a small control panel) that live-adjust the liquidGL parameters — at minimum refraction, aberration (chromatic), frost/blur, specular, and bevel — and update the glass in real time."
+  - "Two LIVE animated WebGL wallpapers behind the glass, user-switchable: (1) a black 'liquid chrome' look — dark metallic ridged waves; (2) a blue macOS-style flowing-waves look. Both animate continuously on a <canvas> via WebGL so the glass has live, refracting content beneath it."
+
+  # --- Backend ---
+  - "Backend = a static file server that serves the client build PLUS a JSON API endpoint GET /api/listings that returns the seeded catalog with server-side pagination (page + pageSize) and the filters above applied as query params, returning { items, page, pageSize, total, totalPages }. Pure TypeScript on Node built-ins (node:http), no native deps."
+
+  # --- Performance is a hard criterion ---
+  - "Performance is an acceptance criterion, not an afterthought. The liquid glass + WebGL wallpapers + scrolling/pagination must stay smooth: animate only transform/opacity in CSS, keep the WebGL/glass work off the layout path, and hold the frame budget under interaction (scrolling and clicking filters/pagination). The frame-timing harness will measure this in a real browser."
+
+acceptance:
+  - "The marketplace renders as real liquid glass (via the vendored liquidGL library) over a live animated WebGL wallpaper, and is visually polished."
+  - "Seeded listings display in a paged grid; numbered pagination works and reflects the active filters."
+  - "Brand, Category, Condition, Quality (with the Passing toggle scoped to Authentic/OEM/Pristine Clone/Super Clone), and Quantity (incl. custom amount) filters all narrow the results correctly and combine."
+  - "GET /api/listings returns the seeded catalog with working server-side pagination + filtering ({ items, page, pageSize, total, totalPages })."
+  - "The Post-a-product modal has every specified field (Title, Description, Brand, Category, Price, Condition, Dimensions, Item quality, Sizes & stock chips, Source images add-photo + paste-URL, Cancel/Post) and posting adds the listing."
+  - "User-facing liquidGL effect controls adjust the glass live, and the two WebGL wallpapers (black liquid chrome; blue macOS waves) are switchable and animate."
+  - "No jank: the glass + wallpapers + scroll/pagination hold the frame budget under interaction (measured by the frame-timing harness)."
+
+council: true   # convene the Council on the plan once, to exercise Step 5

@@ -67,12 +67,12 @@ export const SLICE_SPEC: Record<Slice, SliceSpec> = {
   frontend: {
     writtenBy: ["frontend"],
     readBy: ["reconciler"], // Backend must NOT read this — the two fan out BLIND.
-    contents: "frontend half + its assumed AUTH PAYLOAD CONTRACT",
+    contents: "frontend half + its assumed API CONTRACT",
   },
   backend: {
     writtenBy: ["backend"],
     readBy: ["reconciler"], // Frontend must NOT read this — the two fan out BLIND.
-    contents: "backend half + its assumed AUTH PAYLOAD CONTRACT",
+    contents: "backend half + its assumed API CONTRACT",
   },
   reconciled: {
     writtenBy: ["reconciler"],

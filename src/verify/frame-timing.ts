@@ -6,9 +6,9 @@
 //      over a throwaway localhost http server.
 //   3. Launch the Chromium that ships in this environment (/opt/pw-browsers) via
 //      Playwright, install a requestAnimationFrame sampler + a longtask observer.
-//   4. Drive ~4–5s of REAL scripted interaction on the liquid-glass UI (hover the
-//      card, focus/type the inputs, submit, toggle login<->signup) so the animation
-//      and any interaction jank actually happen.
+//   4. Drive several seconds of REAL scripted interaction on the liquid-glass UI
+//      (hover the card, scroll, type any inputs, click filter/pagination/toggle/
+//      submit controls) so the animation and any interaction jank actually happen.
 //   5. Read the frame deltas back and compute two numbers the Council mandated:
 //        worstFrameMs      = the single worst inter-frame delta
 //        droppedRatio      = fraction of frames that missed the 60fps budget
@@ -160,19 +160,45 @@ async function driveInteraction(page: any): Promise<void> {
     const el = page.locator(sel).first();
     if (await el.count()) { try { await el.fill(text, { timeout: 800 }); } catch { /* ignore */ } }
   };
+  // Scroll the page (or a scroll container) to exercise scroll-driven animation.
+  const scroll = async () => {
+    try {
+      await page.mouse.wheel(0, 1200);
+    } catch { /* ignore */ }
+  };
+  // Click the Nth matching interactive element (chips, buttons, links, pagination),
+  // not just the first, so filters/pagination actually change state under the sampler.
+  const clickNth = async (sel: string, n: number) => {
+    const loc = page.locator(sel);
+    try {
+      const count = await loc.count();
+      if (count) { try { await loc.nth(n % count).click({ timeout: 800 }); } catch { /* ignore */ } }
+    } catch { /* ignore */ }
+  };
 
-  // Two full passes so transitions run repeatedly under the sampler.
-  for (let i = 0; i < 2; i++) {
-    await hover('[data-testid="card"], form, main, body');
-    await page.waitForTimeout(300);
+  // Several passes so transitions/scroll/filter changes run repeatedly under the
+  // sampler. Selectors are generic (they cover the auth app AND a filtered,
+  // paginated marketplace); each is best-effort, so a UI missing a given control
+  // simply skips it rather than failing.
+  for (let i = 0; i < 3; i++) {
+    await hover('[data-testid="card"], [data-testid], form, main, body');
+    await page.waitForTimeout(200);
+    await scroll();
+    await page.waitForTimeout(250);
+    // Text inputs, if any (auth fields, a custom-quantity box, a search box).
     await type('[data-testid="email"], input[type="email"], input[name="email"]', `user${i}@example.com`);
-    await page.waitForTimeout(250);
     await type('[data-testid="password"], input[type="password"], input[name="password"]', "hunter2-correct");
-    await page.waitForTimeout(250);
-    await click('[data-testid="submit"], button[type="submit"], button');
-    await page.waitForTimeout(500);
-    await click('[data-testid="toggle-mode"], a, button');
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(150);
+    // Interactive controls: filter chips / toggles / buttons / links, cycling the
+    // index so different filters and pagination pages get exercised each pass.
+    await clickNth(
+      'button, a[href], [role="button"], [data-testid*="filter"], [data-testid*="chip"], ' +
+        '[data-testid*="page"], [data-testid*="toggle"], [data-testid="submit"]',
+      i + 1
+    );
+    await page.waitForTimeout(400);
+    await scroll();
+    await page.waitForTimeout(300);
   }
 }
 

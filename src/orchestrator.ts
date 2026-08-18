@@ -22,6 +22,7 @@ import { reconcile } from "./swarm/reconciler.js";
 import { buildTestFix, type VerifyResult } from "./verify/build-test-fix.js";
 import {
   ensureWorkspaceScaffold,
+  resetWorkspaceSrc,
   workspaceTestFiles,
   workspaceSourceFiles,
   WORKSPACE_SRC,
@@ -306,10 +307,15 @@ export async function execute(jobPath: string, _opts: RunOptions = {}): Promise<
 
   ensureStore();
 
-  // Provision the gitignored build scaffolding (workspace/src tree + tsconfig)
-  // the verify loop assumes. A freshly rebuilt box has none of it, so create it
-  // BEFORE fan-out — the specialists spawn with cwd=WORKSPACE_DIR (must exist),
-  // and Stage D's `tsc -p workspace/tsconfig.json` needs the config on disk.
+  // Start each full build from a CLEAN workspace/src so it never inherits a prior
+  // job's files (stale client/server/tests would break tsc or run as dead tests).
+  // Then provision the gitignored build scaffolding (workspace/src tree + tsconfig
+  // + vendored libs) the verify loop assumes. A freshly rebuilt box has none of it,
+  // so create it BEFORE fan-out — the specialists spawn with cwd=WORKSPACE_DIR
+  // (must exist), and Stage D's `tsc -p workspace/tsconfig.json` needs the config
+  // on disk. The vendored liquidGL lib is copied into client/lib/ here, so the
+  // frontend can import it and the plan can treat it as a given.
+  resetWorkspaceSrc();
   ensureWorkspaceScaffold();
 
   // GUARD: the whole point of this command is to use the plan already in the
@@ -415,17 +421,17 @@ function composeDone(verify: VerifyResult): string {
     "BUILD COMPLETION RECORD (harness-authored from the real verification result).",
     `verification: ${verify.status} after ${verify.attempts} attempt(s).`,
     "",
-    "Acceptance criteria:",
+    "Evidence against the plan's acceptance criteria (judge these against `goal`/`plan`):",
     `  - Renders + polished: client built (${clientFiles.join(", ") || "none"}); the frame-timing ` +
-      `harness rendered it in headless Chromium under scripted interaction. Visual/a11y polish is ` +
-      `not auto-graded — human review.`,
-    `  - Signup/login end-to-end: server built (${serverFiles.join(", ") || "none"}); ${tests.length} ` +
-      `test file(s) passed under 'node --test' [${tests.join(", ") || "none"}]; persistence via ` +
-      `JsonFileUserStore.`,
+      `harness rendered it in headless Chromium under scripted interaction (scroll + click filters/` +
+      `pagination/buttons). Visual/a11y polish is not auto-graded — human review.`,
+    `  - Backend behavior: server built (${serverFiles.join(", ") || "none"}); ${tests.length} ` +
+      `test file(s) passed under 'node --test' [${tests.join(", ") || "none"}], covering the endpoints/` +
+      `pagination/filters (and classifyFrames) the plan defines.`,
     `  - Not laggy: the AUTOMATED frame-timing gate RAN in Chromium and ` +
       `${verify.status === "PASS" ? "PASSED" : "did NOT pass"} — ${frameLine}. This is auto-measured ` +
-      `by the harness; the plan's "manual reviewer probe" language is stale escalation cruft and does ` +
-      `NOT govern the gate.`,
+      `by the harness; any "manual reviewer probe" language in the plan is stale escalation cruft and ` +
+      `does NOT govern the gate.`,
     "",
     `Contracts: frontend=${feLen} chars, backend=${beLen} chars (mem:frontend / mem:backend).`,
     `Build: tsc clean vs workspace/tsconfig.json; sources under workspace/src/{client,server}.`,
