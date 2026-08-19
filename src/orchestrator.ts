@@ -341,10 +341,21 @@ export async function execute(jobPath: string, _opts: RunOptions = {}): Promise<
   console.log(`  cleared downstream build slices: frontend, backend, reconciled, done`);
 
   // --- Stage A: FAN-OUT — Frontend + Backend, blind & parallel ------------
-  banner("STAGE A · FAN-OUT   (Frontend + Backend, blind ∥ → write code + `frontend`/`backend`)");
-  const fan = await runFanout();
+  // The plan is handed to each specialist INLINE (not via a racing read_memory —
+  // see swarm/fanout.ts). Each returns its contract in its final message; the
+  // orchestrator persists the `frontend`/`backend` slices here (sequential, so the
+  // store write is reliable), replacing the specialists' unreliable write_memory.
+  banner("STAGE A · FAN-OUT   (Frontend + Backend, blind ∥ → write code, return `frontend`/`backend`)");
+  const fan = await runFanout(goal, existingPlan);
   logSources2(fan.frontend);
   logSources2(fan.backend);
+  writeSlice("frontend", contractSlice(fan.frontend.output));
+  writeSlice("backend", contractSlice(fan.backend.output));
+  console.log(
+    `  persisted contract slices from specialist output: ` +
+      `frontend=${readSlice("frontend")?.trim().length ?? 0} chars, ` +
+      `backend=${readSlice("backend")?.trim().length ?? 0} chars.`
+  );
 
   // --- Stage B: RECONCILE — the only agent that sees both contracts -------
   banner("STAGE B · RECONCILE (reads frontend + backend → writes `reconciled` seams)");
@@ -436,6 +447,20 @@ function composeDone(verify: VerifyResult): string {
     `Contracts: frontend=${feLen} chars, backend=${beLen} chars (mem:frontend / mem:backend).`,
     `Build: tsc clean vs workspace/tsconfig.json; sources under workspace/src/{client,server}.`,
   ].join("\n");
+}
+
+// Persist a specialist's contract from its final message. Specialists print a short
+// summary + the "=== API CONTRACT === … === END CONTRACT ===" block instead of
+// calling write_memory (unreliable in the parallel fan-out). We store the whole
+// final message when it carries the contract block; if the block is present we trim
+// to summary-through-block so the slice is the contract, not stray chatter. An empty
+// return leaves the slice empty, which the deliverable gate (D/E) then bounces.
+function contractSlice(output: string): string {
+  const text = (output ?? "").trim();
+  if (!text) return "";
+  const end = text.lastIndexOf("=== END CONTRACT ===");
+  if (end >= 0) return text.slice(0, end + "=== END CONTRACT ===".length).trim();
+  return text; // no block found — keep the message; D/E still enforces non-empty
 }
 
 function indent(s: string): string {

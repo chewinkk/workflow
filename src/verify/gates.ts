@@ -158,6 +158,17 @@ function readIf(path: string): string {
   return existsSync(path) ? readFileSync(path, "utf8") : "";
 }
 
+// The frontend specialist's OWN client source (all client/*.ts except tests and
+// except the vendored library itself under client/lib/). This is what the fidelity
+// checks inspect: we want to know whether the specialist's code uses the mandated
+// technology, not whether the vendored library file happens to contain it.
+function clientSourceText(): string {
+  return walkWorkspaceTs()
+    .filter((f) => f.startsWith(CLIENT_DIR) && !f.startsWith(CLIENT_LIB_DIR) && !f.endsWith(".test.ts"))
+    .map((f) => readIf(f))
+    .join("\n");
+}
+
 export function checkDeliverables(): DeliverableMiss[] {
   const misses: DeliverableMiss[] = [];
   const html = readIf(CLIENT_HTML);
@@ -228,6 +239,57 @@ export function checkDeliverables(): DeliverableMiss[] {
         `The \`backend\` store slice is EMPTY — write memory \`backend\` with a short summary + the ` +
         `"=== API CONTRACT ===" block for the server's actual endpoints/fields/responses/state.`,
     });
+  }
+
+  // --- Fidelity checks: the plan mandated REAL technology, not a look-alike -----
+  // tsc + node --test + the frame gate all pass on a build that COMPILES and stays
+  // smooth while completely ignoring the plan's premise — faking glass with CSS,
+  // painting a gradient instead of a real WebGL wallpaper, reimplementing (or not
+  // using) a vendored library. These structural checks fail such a build so the
+  // harness can never green-light one that faked what the plan is actually about.
+  const planText = readSlice("plan") ?? "";
+  const clientSrc = clientSourceText();
+
+  // F — if the plan VENDORS a library (harness provisioned it into client/lib/), the
+  // client MUST import it. Reading the file then hand-rolling the effect is the exact
+  // failure we saw: the vendored library sat unused while the UI faked it in CSS.
+  const vendoredLibs = existsSync(CLIENT_LIB_DIR)
+    ? readdirSync(CLIENT_LIB_DIR).filter((f) => f.endsWith(".js"))
+    : [];
+  if (vendoredLibs.length && clientSrc) {
+    const importsAVendoredLib = vendoredLibs.some((f) => {
+      const base = f.replace(/\.js$/, "");
+      // matches:  from "./lib/liquidgl.js"  |  import("./lib/liquidgl")  |  "../lib/liquidgl.js"
+      return new RegExp(`["'\\\`][^"'\\\`]*\\blib/${base}(?:\\.js)?["'\\\`]`).test(clientSrc);
+    });
+    if (!importsAVendoredLib) {
+      misses.push({
+        code: "F",
+        detail:
+          `A library is VENDORED at workspace/src/client/lib/ (${vendoredLibs.join(", ")}) but the ` +
+          `client code never IMPORTS it. The plan requires using the vendored library, not faking its ` +
+          `effect. In main.ts (or a module it imports), \`import\` the vendored file (e.g. ` +
+          `import liquidGL from "./lib/${vendoredLibs[0].replace(/\.js$/, ".js")}") and drive the real ` +
+          `UI through it — do NOT reimplement the effect in CSS/hand-rolled code.`,
+      });
+    }
+  }
+
+  // G — if the plan calls for a WebGL wallpaper/background, the client MUST create a
+  // real WebGL context. A CSS gradient or 2D-canvas "wallpaper" compiles and animates
+  // but is not what the plan asked for.
+  if (/\bwebgl\b/i.test(planText) && clientSrc) {
+    const createsWebGL = /getContext\s*\(\s*["'`](?:webgl2?|experimental-webgl)["'`]/.test(clientSrc);
+    if (!createsWebGL) {
+      misses.push({
+        code: "G",
+        detail:
+          `The plan calls for a live WebGL wallpaper/background, but the client never creates a WebGL ` +
+          `context (no getContext("webgl"/"webgl2")). A CSS gradient or 2D canvas is NOT a WebGL ` +
+          `wallpaper. Create a real WebGL context on a <canvas> and animate it with a shader, as the ` +
+          `plan describes (e.g. the black liquid-chrome and blue macOS-waves wallpapers).`,
+      });
+    }
   }
 
   return misses;

@@ -1,9 +1,24 @@
 // Swarm fan-out (spec §2/§6). The single Executor role fans out into parallel
 // specialists. In Step 4 that is Frontend + Backend, run in PARALLEL and BLIND:
-// each reads only `goal`+`plan` from the store, builds its half to disk, and
-// declares its own assumed API contract into its own slice. Neither
-// reads the other's slice — that blindness is what makes the Reconciler's job
-// real (it catches seams no single reviewer, seeing one side, could).
+// each is handed the `goal`+`plan` INLINE, builds its half to disk, and declares
+// its own assumed API contract in its final message. Neither is given the other's
+// half — that blindness is what makes the Reconciler's job real (it catches seams
+// no single reviewer, seeing one side, could).
+//
+// WHY inline, not read_memory: the two specialists are the ONLY agents the
+// orchestrator runs concurrently (Promise.all). Each `claude` boots its own Serena
+// MCP server against the same store dir; two starting at the same instant race on
+// Serena's project onboarding/index, and the memory tools intermittently fail to
+// come up in the specialist subprocesses. When that happened the specialists could
+// not read `plan` — so they never saw "import the vendored liquidGL / build real
+// WebGL wallpapers", globbed the filesystem for a plan file, found nothing, and
+// built a generic CSS-glass app from priors (the observed failure). The plan is a
+// FIXED input by fan-out time, so the orchestrator reads it once (sequentially,
+// reliably) and passes goal+plan in the directive. Deterministic, and it puts the
+// spec in the model's context — which is what lets a single strong model one-shot
+// it. The contract flows back the same way: the specialist prints it in its final
+// message and the orchestrator persists the slice, so the racing `write_memory`
+// (which failed symmetrically, leaving the slices empty) is gone too.
 //
 // "Who" = agency-agents roster personalities (vendored under agents/roster/,
 // verified to exist in Phase 1). "How" = skills would stack here (taste,
@@ -52,11 +67,24 @@ export interface Divergence {
   backendOverride?: string;
 }
 
-function frontend(): Promise<AgentResult> {
+// The goal + plan are handed to the specialist INLINE (see the WHY note at the top
+// of this file), wrapped in clear delimiters so the model treats them as the spec.
+function specContext(goal: string, plan: string): string {
+  return (
+    "\n\n===== GOAL (the objective + constraints + acceptance criteria) =====\n" +
+    goal.trim() +
+    "\n===== END GOAL =====\n\n" +
+    "===== PLAN (the Council-ratified spec — BUILD EXACTLY THIS) =====\n" +
+    plan.trim() +
+    "\n===== END PLAN =====\n"
+  );
+}
+
+function frontend(goal: string, plan: string): Promise<AgentResult> {
   const directive =
-    "You are the FRONTEND specialist in a blind fan-out. Your FIRST TWO actions MUST be tool " +
-    "calls: read_memory(name=\"goal\"), then read_memory(name=\"plan\") — the Serena MEMORY STORE, " +
-    "not the filesystem. Do NOT use Glob or Read to find goal/plan; only read_memory returns them. " +
+    "You are the FRONTEND specialist in a blind fan-out. The GOAL and PLAN are provided " +
+    "INLINE at the end of this message — that is your complete spec; do NOT call read_memory " +
+    "or hunt the filesystem for them. " +
     "BUILD EXACTLY WHAT THE PLAN DESCRIBES — the plan is the spec; do not invent a different app. " +
     "You MUST FOLLOW the plan's performance rules exactly (animate only transform/opacity; keep " +
     "backdrop-filter / heavy GPU layers promoted to their own layer with `will-change: transform`; " +
@@ -91,14 +119,15 @@ function frontend(): Promise<AgentResult> {
     "them. Keep the animation smooth — animate transform/opacity, avoid layout-triggering properties " +
     "in the animation path.\n" +
     "Because you cannot see the backend, YOU decide the exact HTTP contract your client " +
-    "will call (endpoints, query params, JSON shapes). Then you MUST call " +
-    "write_memory(name=\"frontend\", ...) — this is REQUIRED; a run " +
-    "where the `frontend` slice is empty FAILS the build. Store a short implementation summary " +
-    "(the files you wrote and the UI/perf approach you took) followed by this exact block, " +
-    "filled in with YOUR client's actual contract:\n\n" +
+    "will call (endpoints, query params, JSON shapes). Your FINAL message MUST END with a short " +
+    "implementation summary (the files you wrote and the UI/perf approach you took) followed by " +
+    "this exact block, filled in with YOUR client's actual contract — the harness reads your " +
+    "final message to persist the `frontend` contract slice, so an empty/blockless final message " +
+    "FAILS the build. Do NOT call write_memory (the store tools are unreliable in the parallel " +
+    "fan-out); just print the block:\n\n" +
     CONTRACT_FORMAT +
-    "\n\nDo not write any other memory." +
-    DONT_VERIFY;
+    DONT_VERIFY +
+    specContext(goal, plan);
   return runAgent("frontend", modelFor("frontend"), directive, {
     systemPrompt: persona(["engineering-frontend-developer", "design-ui-designer"]),
     extraTools: ["Write", "Edit", "MultiEdit", "Read", "Glob", "Grep"],
@@ -107,12 +136,12 @@ function frontend(): Promise<AgentResult> {
   });
 }
 
-export function runBackend(div?: Divergence): Promise<AgentResult> {
+export function runBackend(goal: string, plan: string, div?: Divergence): Promise<AgentResult> {
   const base =
-    "You are the BACKEND specialist in a blind fan-out. Your FIRST TWO actions MUST be tool calls: " +
-    "read_memory(name=\"goal\"), then read_memory(name=\"plan\") — the Serena MEMORY STORE, not the " +
-    "filesystem (do NOT Glob/Read to find them). BUILD EXACTLY WHAT THE PLAN DESCRIBES — the plan is " +
-    "the spec. Do NOT read the `frontend` memory — you are working blind to the frontend team.\n" +
+    "You are the BACKEND specialist in a blind fan-out. The GOAL and PLAN are provided INLINE at " +
+    "the end of this message — that is your complete spec; do NOT call read_memory or hunt the " +
+    "filesystem for them. BUILD EXACTLY WHAT THE PLAN DESCRIBES — the plan is the spec. You are " +
+    "working blind to the frontend team (you are not given their half).\n" +
     `Build the BACKEND exactly as the plan calls for, as real files under ` +
     `${WORKSPACE_SRC}/server/ (pure TypeScript, prefer Node built-ins like node:http / node:crypto, ` +
     "explicit `.ts` import extensions, no native deps, do not touch tsconfig.json). Common shapes the " +
@@ -125,17 +154,20 @@ export function runBackend(div?: Divergence): Promise<AgentResult> {
     "server's real behavior with node:test — e.g. the endpoints return the expected shapes, and " +
     "pagination + each filter the plan defines actually narrows/pages the data correctly.\n" +
     "Because you cannot see the frontend, YOU decide the exact HTTP contract your server " +
-    "exposes (endpoints, query params, JSON shapes). Then you MUST call write_memory(name=\"backend\", " +
-    "...) — REQUIRED; an empty `backend` slice FAILS the build. Store a short implementation summary " +
-    "followed by this exact block, filled in:\n\n" +
-    CONTRACT_FORMAT +
-    "\n\nDo not write any other memory.";
+    "exposes (endpoints, query params, JSON shapes). Your FINAL message MUST END with a short " +
+    "implementation summary followed by this exact block, filled in — the harness reads your final " +
+    "message to persist the `backend` contract slice, so an empty/blockless final message FAILS the " +
+    "build. Do NOT call write_memory (the store tools are unreliable in the parallel fan-out); just " +
+    "print the block:\n\n" +
+    CONTRACT_FORMAT;
   const directive =
     (div?.backendOverride
       ? base +
         "\n\nIMPORTANT contract requirements you MUST follow for this build:\n" +
         div.backendOverride
-      : base) + DONT_VERIFY;
+      : base) +
+    DONT_VERIFY +
+    specContext(goal, plan);
   return runAgent("backend", modelFor("backend"), directive, {
     systemPrompt: persona(["engineering-backend-architect"]),
     extraTools: ["Write", "Edit", "MultiEdit", "Read", "Glob", "Grep"],
@@ -149,9 +181,10 @@ export interface FanoutResult {
   backend: AgentResult;
 }
 
-// Run both specialists concurrently. They are separate headless processes that
-// only read goal+plan, so they are structurally blind to each other.
-export async function runFanout(div?: Divergence): Promise<FanoutResult> {
-  const [fe, be] = await Promise.all([frontend(), runBackend(div)]);
+// Run both specialists concurrently. Each is handed the same goal+plan inline and
+// neither is given the other's half, so they are structurally blind to each other.
+// The orchestrator persists their contract slices from the returned output.
+export async function runFanout(goal: string, plan: string, div?: Divergence): Promise<FanoutResult> {
+  const [fe, be] = await Promise.all([frontend(goal, plan), runBackend(goal, plan, div)]);
   return { frontend: fe, backend: be };
 }
