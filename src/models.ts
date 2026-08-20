@@ -14,7 +14,14 @@ export type Role =
   | "backend"
   | "reconciler"
   | "council-critic"
-  | "council-judge";
+  | "council-judge"
+  | "critique"; // vision-critique gate (dynamic: see modelFor)
+
+// The vision-critique gate routes by how hard the judgment is: a cheap structural
+// pass ("is it obviously broken / faked?") vs. the strong aesthetic verdict
+// ("does it look premium / on-brief?"). Cheap pass first; strong pass only where
+// it earns its cost.
+export type CritiqueDifficulty = "structural" | "aesthetic";
   // Later steps (kept here as the §8 map, wired when their step lands):
   // | "security"      // Opus 4.8
   // | "runtime"       // Sonnet 5
@@ -42,8 +49,16 @@ export const MODELS: Record<Role, string> = {
   // §8: Council critics -> Sonnet 5 (each has a narrow lens); Council Judge -> Opus 4.8.
   "council-critic": "claude-sonnet-5",
   "council-judge": "claude-opus-4-8",
+  // Vision-critique: Opus 4.8 is the default (the aesthetic verdict). The cheap
+  // structural pass routes to Sonnet 5 via modelFor's `difficulty` option.
+  critique: "claude-opus-4-8",
 };
 
-export function modelFor(role: Role): string {
+export function modelFor(role: Role, opts?: { difficulty?: CritiqueDifficulty }): string {
+  // Dynamic routing for the vision-critique gate: the fast structural pass runs on
+  // Sonnet 5; the aesthetic verdict (and anything unspecified) runs on Opus 4.8.
+  if (role === "critique") {
+    return opts?.difficulty === "structural" ? "claude-sonnet-5" : MODELS.critique;
+  }
   return MODELS[role];
 }

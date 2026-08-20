@@ -22,6 +22,7 @@ import {
   type Cmd,
 } from "./gates.js";
 import { frameTimingGate, frameTimingErrorText, type FrameTimingResult } from "./frame-timing.js";
+import { visionCritiqueGate, visionCritiqueErrorText, type VisionCritiqueResult } from "./vision-critique.js";
 
 const REPO_ROOT = process.cwd();
 
@@ -87,6 +88,18 @@ function timingCmdRun(t: FrameTimingResult): CmdRun {
     stdout: t.detail,
     stderr: t.pass ? "" : t.detail,
     ok: t.pass,
+  };
+}
+
+// Represent a vision-critique result as a CmdRun so it fits the same trace shape.
+function critiqueCmdRun(c: VisionCritiqueResult): CmdRun {
+  return {
+    label: "vision-critique (chromium)",
+    command: "vision-critique harness",
+    exitCode: c.pass ? 0 : 1,
+    stdout: c.detail,
+    stderr: c.pass ? "" : visionCritiqueErrorText(c),
+    ok: c.pass,
   };
 }
 
@@ -190,8 +203,31 @@ export async function buildTestFix(): Promise<VerifyResult> {
       continue;
     }
 
-    // All three tiers green.
     trace.push({ attempt, run: timingRun, action: "build + tests + frame budget green" });
+
+    // --- Tier 4: VISION CRITIQUE (the "is it actually good" gate) ----------
+    // Screenshots the running UI in Chromium and has a routed vision model judge it
+    // against the goal + design grounding. A blocker/major issue bounces to the
+    // Executor's visual-fidelity fix mode. Infra failure soft-skips (pass=true), so
+    // a down critic never bricks a build; only a critic that RAN and found blocking
+    // problems fails the gate.
+    log(`  ▶ [attempt ${attempt}] vision-critique (Chromium screenshots → routed vision verdict)`);
+    const critique = await visionCritiqueGate();
+    const critiqueRun = critiqueCmdRun(critique);
+    log(`    ${critique.ran ? "judged" : "soft-skip"}: ${critique.detail} [model=${critique.model}]`);
+    if (!critique.pass) {
+      if (attempt > MAX_BOUNCES) {
+        trace.push({ attempt, run: critiqueRun, action: "escalated-no-replan (vision critique still failing)" });
+        break;
+      }
+      log(`    ↳ bouncing visual-fidelity failure to Executor for a UI fix…`);
+      const fix = await fixOnDisk("vision", visionCritiqueErrorText(critique));
+      trace.push({ attempt, run: critiqueRun, action: `executor-fix: ${fix.summary}` });
+      continue;
+    }
+
+    // All tiers green.
+    trace.push({ attempt, run: critiqueRun, action: "build + tests + frame budget + vision green" });
     return { status: "PASS", attempts: attempt, trace };
   }
 

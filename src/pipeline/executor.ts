@@ -45,13 +45,16 @@ export interface FixResult {
 //     (an inert page, a missing perf probe, zero tests, an in-memory store the
 //     Council overrode). Here the Executor CREATES what's missing, not just edits.
 export async function fixOnDisk(
-  phase: "build" | "test" | "perf" | "deliverable",
+  phase: "build" | "test" | "perf" | "deliverable" | "vision",
   errorText: string
 ): Promise<FixResult> {
   const intro =
     phase === "perf"
       ? "You are the Executor in UI-PERFORMANCE fix mode. The frame-timing gate measured the " +
         "liquid-glass UI running in a real browser under interaction and it is JANKY:\n\n"
+      : phase === "vision"
+      ? "You are the Executor in VISUAL-FIDELITY fix mode. A vision critic reviewed screenshots of the " +
+        "REAL running UI and found it does not match what the plan asked for:\n\n"
       : phase === "deliverable"
       ? "You are the Executor in DELIVERABLE mode. The blind fan-out under-delivered against the " +
         "ratified plan — mandated artifacts are missing and MUST be created:\n\n"
@@ -62,6 +65,14 @@ export async function fixOnDisk(
         "2) Make the MINIMAL change that brings both metrics under budget (animate transform/opacity " +
         "only, drop layout-triggering properties from the animation path, cut synchronous layout reads " +
         "in handlers, shrink backdrop-filter regions). Do not touch tsconfig.json. "
+      : phase === "vision"
+      ? "1) Read the client UI file(s) under workspace/src/client/ (index.html, main.ts, and any modules " +
+        "they import, including the vendored library under client/lib/). 2) Make the changes that resolve " +
+        "EACH blocking issue above. The premise must be REAL: the wallpapers are live WebGL shaders on a " +
+        "<canvas> that visibly animate (never CSS gradients/static images), and the glass surfaces IMPORT " +
+        "and use the vendored liquidGL library so they REFRACT the wallpaper (never a flat translucent " +
+        "panel or a plain backdrop-filter blur). Keep text on glass readable and the layout aligned. Keep " +
+        "pure TypeScript with explicit `.ts` import extensions; do NOT touch tsconfig.json. "
       : phase === "deliverable"
       ? `The code lives under ${WORKSPACE_SRC}/ (client/ and server/). ` +
         "1) Read the existing client/server files so your additions fit the real code (endpoints, " +

@@ -56,12 +56,13 @@ const MIME: Record<string, string> = {
 };
 
 // Where the image bakes Chromium (Dockerfile: PLAYWRIGHT_BROWSERS_PATH).
-const DEFAULT_BROWSERS_PATH = "/opt/pw-browsers";
+export const DEFAULT_BROWSERS_PATH = "/opt/pw-browsers";
 
 // Resolve the full-Chromium binary the image baked, so launch() never triggers a
 // download and never falls back to /root/.cache/ms-playwright (which is empty on
 // the box). Falls back to the baked default path if the env var is somehow unset.
-function chromeExecutable(): string | undefined {
+// Exported so sibling browser gates (vision-critique) launch the same binary.
+export function chromeExecutable(): string | undefined {
   const base = process.env.PLAYWRIGHT_BROWSERS_PATH || DEFAULT_BROWSERS_PATH;
   if (!existsSync(base)) return undefined;
   for (const d of readdirSync(base)) {
@@ -92,7 +93,18 @@ async function bundleClient(): Promise<string> {
   return file.text;
 }
 
-function serve(): Promise<{ server: Server; url: string }> {
+// Bundle main.ts and EMIT it to disk as main.js, so index.html's own
+// <script type="module" src="./main.js"> resolves — both under a browser gate and
+// when the app is served standalone. (main.js is not *.ts, so tsc/node --test
+// ignore it.) Shared by the frame-timing and vision-critique gates.
+export async function bundleClientToDisk(): Promise<void> {
+  const bundle = await bundleClient();
+  writeFileSync(join(CLIENT_DIR, "main.js"), bundle, "utf8");
+}
+
+// Serve the client dir over a throwaway localhost server. Exported so the
+// vision-critique gate serves the same build the frame gate does.
+export function serveClient(): Promise<{ server: Server; url: string }> {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
       const url = (req.url ?? "/").split("?")[0];
@@ -211,13 +223,9 @@ export async function frameTimingGate(): Promise<FrameTimingResult> {
   if (!existsSync(CLIENT_HTML)) return fail(`no client UI to measure: ${CLIENT_HTML} does not exist`);
   if (!existsSync(CLIENT_ENTRY)) return fail(`no client entry to bundle: ${CLIENT_ENTRY} does not exist`);
 
-  // Bundle main.ts and EMIT it to disk as main.js, so index.html's own
-  // <script type="module" src="./main.js"> resolves — both here under the harness
-  // and when the app is served standalone. The app is a real deliverable, not a
-  // harness-only artifact. (main.js is not *.ts, so tsc/node --test ignore it.)
+  // Emit main.js so index.html's own <script src="./main.js"> resolves (shared helper).
   try {
-    const bundle = await bundleClient();
-    writeFileSync(join(CLIENT_DIR, "main.js"), bundle, "utf8");
+    await bundleClientToDisk();
   } catch (e) {
     return fail(`client failed to bundle for the browser: ${(e as Error).message}`);
   }
@@ -226,7 +234,7 @@ export async function frameTimingGate(): Promise<FrameTimingResult> {
   // executablePath lookup ever returns undefined (headless-shell fallback).
   if (!process.env.PLAYWRIGHT_BROWSERS_PATH) process.env.PLAYWRIGHT_BROWSERS_PATH = DEFAULT_BROWSERS_PATH;
 
-  const { server, url } = await serve();
+  const { server, url } = await serveClient();
 
   let browser: any;
   try {

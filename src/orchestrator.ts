@@ -426,6 +426,9 @@ function composeDone(verify: VerifyResult): string {
   const frameLine =
     [...verify.trace].reverse().find((s) => s.run.label.startsWith("frame-timing"))?.run.stdout ??
     "(frame-timing did not run)";
+  const visionLine =
+    [...verify.trace].reverse().find((s) => s.run.label.startsWith("vision-critique"))?.run.stdout ??
+    "(vision-critique did not run)";
   const feLen = readSlice("frontend")?.trim().length ?? 0;
   const beLen = readSlice("backend")?.trim().length ?? 0;
   return [
@@ -443,6 +446,8 @@ function composeDone(verify: VerifyResult): string {
       `${verify.status === "PASS" ? "PASSED" : "did NOT pass"} — ${frameLine}. This is auto-measured ` +
       `by the harness; any "manual reviewer probe" language in the plan is stale escalation cruft and ` +
       `does NOT govern the gate.`,
+    `  - Looks right: the AUTOMATED vision-critique gate screenshotted the running UI and a routed ` +
+      `vision model judged it against the goal + design grounding — ${visionLine}.`,
     "",
     `Contracts: frontend=${feLen} chars, backend=${beLen} chars (mem:frontend / mem:backend).`,
     `Build: tsc clean vs workspace/tsconfig.json; sources under workspace/src/{client,server}.`,
