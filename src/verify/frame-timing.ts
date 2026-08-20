@@ -374,9 +374,13 @@ export function frameTimingErrorText(r: FrameTimingResult): string {
       "failure is that scrolling / filtering / paginating makes it MUCH worse than idle:\n" +
       `  ${r.detail}\n\n` +
       "The UI code is under workspace/src/client/. Fix the INTERACTION cost specifically:\n" +
-      "  - Do NOT rebuild the whole grid or re-run liquidGL snapshots on every filter/pagination\n" +
-      "    change — update only what changed; use registerDynamic()/syncWith() so the glass tracks\n" +
-      "    moving content without a full re-snapshot.\n" +
+      "  - REDUCE THE NUMBER OF GLASS SURFACES. This is the biggest lever: do NOT give every listing\n" +
+      "    card its own liquidGL surface. Put the grid on ONE glass panel and render the cards as flat\n" +
+      "    DOM on top of it. Reserve live refraction for the chrome (top bar, filter rail, modal). N\n" +
+      "    glass surfaces re-compositing over a software-rendered WebGL wallpaper is the worst case.\n" +
+      "  - Do NOT rebuild the grid or re-run liquidGL snapshots on every filter/pagination change —\n" +
+      "    update only what changed; use registerDynamic()/syncWith() so the glass tracks moving\n" +
+      "    content without a full re-snapshot.\n" +
       "  - Debounce filter/search/pagination handlers; never do synchronous layout reads in them.\n" +
       "  - Animate only transform/opacity; keep the WebGL wallpapers at a fixed rAF cost independent\n" +
       "    of interaction (they should cost the same idle and under interaction).\n" +

@@ -22,7 +22,12 @@ import {
   type Cmd,
 } from "./gates.js";
 import { frameTimingGate, frameTimingErrorText, type FrameTimingResult } from "./frame-timing.js";
-import { visionCritiqueGate, visionCritiqueErrorText, type VisionCritiqueResult } from "./vision-critique.js";
+import {
+  visionCritiqueGate,
+  visionCritiqueErrorText,
+  visionIssuesText,
+  type VisionCritiqueResult,
+} from "./vision-critique.js";
 
 const REPO_ROOT = process.cwd();
 
@@ -92,12 +97,15 @@ function timingCmdRun(t: FrameTimingResult): CmdRun {
 }
 
 // Represent a vision-critique result as a CmdRun so it fits the same trace shape.
+// stdout carries the verdict AND the full issue list, so the `done` record and the
+// Reviewer see exactly what the critic flagged (not just a pass/fail count).
 function critiqueCmdRun(c: VisionCritiqueResult): CmdRun {
+  const body = `${c.detail}\n${visionIssuesText(c)}`;
   return {
     label: "vision-critique (chromium)",
     command: "vision-critique harness",
     exitCode: c.pass ? 0 : 1,
-    stdout: c.detail,
+    stdout: body,
     stderr: c.pass ? "" : visionCritiqueErrorText(c),
     ok: c.pass,
   };
@@ -199,34 +207,38 @@ export async function buildTestFix(): Promise<VerifyResult> {
     const critique = await visionCritiqueGate();
     const critiqueRun = critiqueCmdRun(critique);
     log(`    ${critique.ran ? "judged" : "soft-skip"} [model=${critique.model}]: ${critique.detail}`);
+    if (critique.issues.length > 0) log(`    critic issues:\n${indent(visionIssuesText(critique))}`);
 
-    // Perf failure takes priority for the fix bounce (vision verdict still recorded).
-    if (!timing.pass) {
-      trace.push({ attempt, run: critiqueRun, action: `vision verdict recorded: ${critique.detail}` });
+    // Both browser gates are decided together. If either fails, we address BOTH in
+    // this attempt (perf AND vision get their own Executor fix pass) rather than
+    // starving one — a perf-only bounce loop would never fix the visual blockers.
+    const timingBad = !timing.pass;
+    const visionBad = !critique.pass;
+    if (timingBad || visionBad) {
       if (attempt > MAX_BOUNCES) {
-        trace.push({ attempt, run: timingRun, action: "escalated-no-replan (frame budget still blown)" });
+        if (timingBad) trace.push({ attempt, run: timingRun, action: "escalated-no-replan (frame budget still blown)" });
+        if (visionBad) trace.push({ attempt, run: critiqueRun, action: "escalated-no-replan (vision critique still failing)" });
         break;
       }
-      log(`    ↳ bouncing frame-timing failure to Executor for a UI-perf fix…`);
-      const fix = await fixOnDisk("perf", frameTimingErrorText(timing));
-      trace.push({ attempt, run: timingRun, action: `executor-fix: ${fix.summary}` });
-      continue;
-    }
-
-    trace.push({ attempt, run: timingRun, action: `frame budget green [${timing.mode}]` });
-
-    if (!critique.pass) {
-      if (attempt > MAX_BOUNCES) {
-        trace.push({ attempt, run: critiqueRun, action: "escalated-no-replan (vision critique still failing)" });
-        break;
+      if (timingBad) {
+        log(`    ↳ bouncing frame-timing failure to Executor for a UI-perf fix…`);
+        const fix = await fixOnDisk("perf", frameTimingErrorText(timing));
+        trace.push({ attempt, run: timingRun, action: `executor-perf-fix: ${fix.summary}` });
+      } else {
+        trace.push({ attempt, run: timingRun, action: `frame budget green [${timing.mode}]` });
       }
-      log(`    ↳ bouncing visual-fidelity failure to Executor for a UI fix…`);
-      const fix = await fixOnDisk("vision", visionCritiqueErrorText(critique));
-      trace.push({ attempt, run: critiqueRun, action: `executor-fix: ${fix.summary}` });
+      if (visionBad) {
+        log(`    ↳ bouncing visual-fidelity failure to Executor for a UI fix…`);
+        const fix = await fixOnDisk("vision", visionCritiqueErrorText(critique));
+        trace.push({ attempt, run: critiqueRun, action: `executor-vision-fix: ${fix.summary}` });
+      } else {
+        trace.push({ attempt, run: critiqueRun, action: `vision green [model=${critique.model}]` });
+      }
       continue;
     }
 
     // All tiers green.
+    trace.push({ attempt, run: timingRun, action: `frame budget green [${timing.mode}]` });
     trace.push({ attempt, run: critiqueRun, action: "build + tests + frame budget + vision green" });
     return { status: "PASS", attempts: attempt, trace };
   }

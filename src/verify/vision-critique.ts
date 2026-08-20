@@ -354,6 +354,15 @@ function describe(pass: string, model: string, blockers: CritiqueIssue[], all: C
   );
 }
 
+// A full, human-readable list of EVERY issue the critic raised (not just blockers).
+// Used for the console trace and the `done` record so the verdict is never opaque.
+export function visionIssuesText(r: VisionCritiqueResult): string {
+  if (r.issues.length === 0) return "(no issues raised)";
+  return r.issues
+    .map((i) => `  [${i.severity}] (${i.state}) ${i.issue}${i.fix ? `  → fix: ${i.fix}` : ""}`)
+    .join("\n");
+}
+
 // Render the critic's blocking issues as the text bounced to the Executor's
 // visual-fidelity fix mode.
 export function visionCritiqueErrorText(r: VisionCritiqueResult): string {
