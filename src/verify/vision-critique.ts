@@ -278,11 +278,14 @@ export async function visionCritiqueGate(): Promise<VisionCritiqueResult> {
     const { chromium } = await import("playwright-core");
     browser = await chromium.launch({ headless: true, executablePath: chromeExecutable() });
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-    await page.goto(url, { waitUntil: "load", timeout: 15000 });
-    await page.waitForTimeout(600); // let the wallpaper + glass settle
 
+    // Reload to a clean base before EACH state so states are independent — a driver
+    // that opened the modal must not leak into the next state's screenshot (a bug
+    // the critic itself caught: wallpaper-2 captured with the modal still open).
     for (const st of STATES) {
       try {
+        await page.goto(url, { waitUntil: "load", timeout: 15000 });
+        await page.waitForTimeout(600); // let the wallpaper + glass settle
         await st.drive(page);
       } catch {
         /* best-effort: judge whatever rendered */
