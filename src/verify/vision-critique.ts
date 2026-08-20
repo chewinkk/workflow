@@ -29,6 +29,7 @@ import {
   chromeExecutable,
   bundleClientToDisk,
   DEFAULT_BROWSERS_PATH,
+  CHROMIUM_ARGS,
 } from "./frame-timing.js";
 import { runAgent } from "../runner.js";
 import { modelFor, type CritiqueDifficulty } from "../models.js";
@@ -276,7 +277,7 @@ export async function visionCritiqueGate(): Promise<VisionCritiqueResult> {
   const shots: { name: string; path: string; note: string }[] = [];
   try {
     const { chromium } = await import("playwright-core");
-    browser = await chromium.launch({ headless: true, executablePath: chromeExecutable() });
+    browser = await chromium.launch({ headless: true, executablePath: chromeExecutable(), args: CHROMIUM_ARGS });
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
     // Reload to a clean base before EACH state so states are independent — a driver

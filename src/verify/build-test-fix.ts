@@ -184,15 +184,25 @@ export async function buildTestFix(): Promise<VerifyResult> {
       trace.push({ attempt, run: test, action: "build + tests green" });
     }
 
-    // --- Tier 3: FRAME TIMING (the "not laggy" gate) ----------------------
-    // Actually renders the liquid-glass UI in Chromium, drives interaction, and
-    // measures real frame timing. A breach — or a missing/un-renderable UI — is
-    // a failure that bounces to the Executor's perf-fix mode, same as build/test.
-    log(`  ▶ [attempt ${attempt}] frame-timing harness (Chromium + rAF sampling under interaction)`);
+    // --- Tier 3+4: the two browser gates, run INDEPENDENTLY each attempt -----
+    // Frame timing ("not laggy") and vision critique ("actually good") are both
+    // measured every attempt, decoupled: the vision gate runs even when the frame
+    // gate fails, so we always get the aesthetic verdict (a perf-blocked build still
+    // gets its looks graded). We then bounce ONE fix per attempt — perf first (it's
+    // the cheaper, more foundational failure), else vision.
+    log(`  ▶ [attempt ${attempt}] frame-timing harness (Chromium; idle-vs-interaction, WebGL-aware)`);
     const timing = await frameTimingGate();
     const timingRun = timingCmdRun(timing);
-    log(`    ${timing.ran ? "measured" : "COULD NOT MEASURE"}: ${timing.detail}`);
+    log(`    ${timing.ran ? "measured" : "COULD NOT MEASURE"} [${timing.mode}]: ${timing.detail}`);
+
+    log(`  ▶ [attempt ${attempt}] vision-critique (Chromium screenshots → routed vision verdict)`);
+    const critique = await visionCritiqueGate();
+    const critiqueRun = critiqueCmdRun(critique);
+    log(`    ${critique.ran ? "judged" : "soft-skip"} [model=${critique.model}]: ${critique.detail}`);
+
+    // Perf failure takes priority for the fix bounce (vision verdict still recorded).
     if (!timing.pass) {
+      trace.push({ attempt, run: critiqueRun, action: `vision verdict recorded: ${critique.detail}` });
       if (attempt > MAX_BOUNCES) {
         trace.push({ attempt, run: timingRun, action: "escalated-no-replan (frame budget still blown)" });
         break;
@@ -203,18 +213,8 @@ export async function buildTestFix(): Promise<VerifyResult> {
       continue;
     }
 
-    trace.push({ attempt, run: timingRun, action: "build + tests + frame budget green" });
+    trace.push({ attempt, run: timingRun, action: `frame budget green [${timing.mode}]` });
 
-    // --- Tier 4: VISION CRITIQUE (the "is it actually good" gate) ----------
-    // Screenshots the running UI in Chromium and has a routed vision model judge it
-    // against the goal + design grounding. A blocker/major issue bounces to the
-    // Executor's visual-fidelity fix mode. Infra failure soft-skips (pass=true), so
-    // a down critic never bricks a build; only a critic that RAN and found blocking
-    // problems fails the gate.
-    log(`  ▶ [attempt ${attempt}] vision-critique (Chromium screenshots → routed vision verdict)`);
-    const critique = await visionCritiqueGate();
-    const critiqueRun = critiqueCmdRun(critique);
-    log(`    ${critique.ran ? "judged" : "soft-skip"}: ${critique.detail} [model=${critique.model}]`);
     if (!critique.pass) {
       if (attempt > MAX_BOUNCES) {
         trace.push({ attempt, run: critiqueRun, action: "escalated-no-replan (vision critique still failing)" });

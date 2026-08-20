@@ -53,6 +53,21 @@ export const DROPPED_FRAME_MS = FRAME_BUDGET_MS * 1.5; // ~25ms = missed a refre
 // Warm-up frames (first paint / compositor spin-up) are not interaction jank.
 export const FRAME_WARMUP_DROP = 10;
 
+// WebGL-aware frame budget. A headless browser with no GPU software-renders WebGL
+// (SwiftShader), so a real-WebGL app blocks the main thread on EVERY frame —
+// regardless of code quality. The strict 22ms/5% budget is physically unreachable
+// there and would fail every honest WebGL build (observed: 100% dropped, worst
+// ~150ms, longTasks ≈ frame count — the software-raster signature, not a code bug).
+// For WebGL apps we switch to a RELATIVE budget: measure an idle baseline (the
+// unavoidable steady wallpaper cost) and require that INTERACTION (scroll / filter /
+// pagination) does not add materially more main-thread jank on top of it. That
+// isolates the app's OWN cost (which it can fix) from the environment's raster cost
+// (which it cannot). A genuinely janky app — one that re-snapshots everything on
+// each interaction — spikes interaction cost far above idle and still fails.
+export const WEBGL_INTERACTION_SLACK_MS = 60; // interaction worst may exceed idle worst by at most this
+export const WEBGL_DROPPED_DELTA_MAX = 0.25; // interaction dropped-ratio may exceed idle by at most this
+export const WEBGL_IDLE_CEILING_MS = 600; // even the steady baseline must be under this (else pathological)
+
 // Recursively list every .ts file under workspace/src (absolute paths). The
 // Executor may organize code into subdirectories, so all workspace discovery
 // (file count, test discovery, fault injection) must recurse — tsc's
@@ -167,6 +182,12 @@ function clientSourceText(): string {
     .filter((f) => f.startsWith(CLIENT_DIR) && !f.startsWith(CLIENT_LIB_DIR) && !f.endsWith(".test.ts"))
     .map((f) => readIf(f))
     .join("\n");
+}
+
+// True when the client creates a real WebGL context — the signal the frame-timing
+// gate uses to pick the relative (vs. strict) budget. Same probe as fidelity gate G.
+export function clientUsesWebGL(): boolean {
+  return /getContext\s*\(\s*["'`](?:webgl2?|experimental-webgl)["'`]/.test(clientSourceText());
 }
 
 export function checkDeliverables(): DeliverableMiss[] {

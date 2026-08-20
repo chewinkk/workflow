@@ -32,13 +32,31 @@ import {
   DROPPED_RATIO_MAX,
   DROPPED_FRAME_MS,
   FRAME_WARMUP_DROP,
+  WEBGL_INTERACTION_SLACK_MS,
+  WEBGL_DROPPED_DELTA_MAX,
+  WEBGL_IDLE_CEILING_MS,
+  clientUsesWebGL,
 } from "./gates.js";
+
+// Chromium launch flags. --enable-unsafe-swiftshader + angle/swiftshader make WebGL
+// actually run in the GPU-less headless box (newer Chromium otherwise disables WebGL
+// there, which would blank the wallpaper canvases). Shared with the vision gate so
+// its screenshots show the real rendered WebGL, not an empty canvas.
+export const CHROMIUM_ARGS = [
+  "--ignore-gpu-blocklist",
+  "--enable-gpu",
+  "--enable-unsafe-swiftshader",
+  "--use-gl=angle",
+  "--use-angle=swiftshader",
+];
 
 export interface FrameTimingResult {
   pass: boolean;
   ran: boolean; // false => the harness could not even measure (treated as a failure)
-  worstFrameMs: number;
-  droppedRatio: number;
+  mode: "strict" | "webgl-relative";
+  worstFrameMs: number; // interaction worst (the reported headline number)
+  idleWorstMs: number; // steady-state baseline worst (webgl-relative mode)
+  droppedRatio: number; // interaction dropped ratio
   frames: number;
   longTasks: number;
   detail: string;
@@ -214,9 +232,23 @@ async function driveInteraction(page: any): Promise<void> {
   }
 }
 
+// Per-phase frame statistics.
+interface PhaseStat {
+  worst: number;
+  droppedRatio: number;
+  n: number;
+}
+function phaseStat(deltas: number[]): PhaseStat {
+  if (deltas.length === 0) return { worst: 0, droppedRatio: 0, n: 0 };
+  const worst = Math.max(...deltas);
+  const dropped = deltas.filter((d) => d > DROPPED_FRAME_MS).length;
+  return { worst, droppedRatio: dropped / deltas.length, n: deltas.length };
+}
+
 export async function frameTimingGate(): Promise<FrameTimingResult> {
   const fail = (detail: string): FrameTimingResult => ({
-    pass: false, ran: false, worstFrameMs: Infinity, droppedRatio: 1, frames: 0, longTasks: 0, detail,
+    pass: false, ran: false, mode: "strict", worstFrameMs: Infinity, idleWorstMs: Infinity,
+    droppedRatio: 1, frames: 0, longTasks: 0, detail,
   });
 
   // HARD FAIL if there is no renderable UI — "not laggy" is not dodgeable.
@@ -234,6 +266,7 @@ export async function frameTimingGate(): Promise<FrameTimingResult> {
   // executablePath lookup ever returns undefined (headless-shell fallback).
   if (!process.env.PLAYWRIGHT_BROWSERS_PATH) process.env.PLAYWRIGHT_BROWSERS_PATH = DEFAULT_BROWSERS_PATH;
 
+  const usesWebGL = clientUsesWebGL();
   const { server, url } = await serveClient();
 
   let browser: any;
@@ -241,49 +274,85 @@ export async function frameTimingGate(): Promise<FrameTimingResult> {
     // playwright-core: no browser-download postinstall — we launch the Chromium the
     // image baked under PLAYWRIGHT_BROWSERS_PATH via executablePath.
     const { chromium } = await import("playwright-core");
-    browser = await chromium.launch({ headless: true, executablePath: chromeExecutable() });
+    browser = await chromium.launch({ headless: true, executablePath: chromeExecutable(), args: CHROMIUM_ARGS });
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     const consoleErrors: string[] = [];
     page.on("pageerror", (err: Error) => consoleErrors.push(err.message));
 
     await page.goto(url, { waitUntil: "load", timeout: 15000 });
     await page.evaluate(SAMPLER);
-    await page.waitForTimeout(400); // let idle cadence settle before we interact
+    await page.waitForTimeout(400); // let first paint / compositor spin-up settle
+    // Boundary between warm-up and the IDLE baseline phase.
+    const warmMark: number = (await page.evaluate("window.__ft.deltas.length")) as number;
+    // IDLE PHASE — steady-state cost with NO interaction (for WebGL, this is the
+    // unavoidable software-raster baseline the app cannot fix in a GPU-less box).
+    await page.waitForTimeout(1500);
+    const idleMark = (await page.evaluate(
+      "({ len: window.__ft.deltas.length, lt: window.__ft.longTasks })"
+    )) as { len: number; lt: number };
+    // INTERACTION PHASE — scroll/filter/pagination; this is where the app's OWN cost shows.
     await driveInteraction(page);
     await page.waitForTimeout(300);
 
     const ft = await page.evaluate("window.__ft");
     const deltasRaw: number[] = (ft?.deltas ?? []) as number[];
-    const longTasks: number = (ft?.longTasks ?? 0) as number;
+    const longTasksTotal: number = (ft?.longTasks ?? 0) as number;
 
-    // Drop warm-up frames (first paint / compositor spin-up are not interaction jank).
-    const deltas = deltasRaw.slice(FRAME_WARMUP_DROP);
-    if (deltas.length < 30) {
+    const warmup = Math.max(FRAME_WARMUP_DROP, warmMark);
+    const idleDeltas = deltasRaw.slice(warmup, idleMark.len);
+    const interDeltas = deltasRaw.slice(idleMark.len);
+    const idleLongTasks = Math.max(0, idleMark.lt);
+    const interLongTasks = Math.max(0, longTasksTotal - idleMark.lt);
+
+    if (interDeltas.length < 20) {
       return {
-        pass: false, ran: false, worstFrameMs: Infinity, droppedRatio: 1,
-        frames: deltas.length, longTasks,
-        detail: `too few frames sampled (${deltas.length}) — the UI never animated under interaction` +
+        pass: false, ran: false, mode: usesWebGL ? "webgl-relative" : "strict",
+        worstFrameMs: Infinity, idleWorstMs: Infinity, droppedRatio: 1,
+        frames: interDeltas.length, longTasks: longTasksTotal,
+        detail: `too few interaction frames sampled (${interDeltas.length}) — the UI never animated under interaction` +
           (consoleErrors.length ? `; page errors: ${consoleErrors.join(" | ")}` : ""),
       };
     }
 
-    const worstFrameMs = Math.max(...deltas);
-    const dropped = deltas.filter((d) => d > DROPPED_FRAME_MS).length;
-    const droppedRatio = dropped / deltas.length;
-    const pass = worstFrameMs < WORST_FRAME_MAX_MS && droppedRatio < DROPPED_RATIO_MAX;
+    const B = phaseStat(idleDeltas); // baseline / idle
+    const I = phaseStat(interDeltas); // interaction
+    const errs = consoleErrors.length ? `; page errors: ${consoleErrors.join(" | ")}` : "";
 
+    if (usesWebGL) {
+      // RELATIVE budget: the app can't fix the software-WebGL baseline, but its
+      // interactions must not pile materially more jank on top of it.
+      const worstDelta = I.worst - B.worst;
+      const droppedDelta = I.droppedRatio - B.droppedRatio;
+      const pass =
+        B.worst < WEBGL_IDLE_CEILING_MS &&
+        worstDelta < WEBGL_INTERACTION_SLACK_MS &&
+        droppedDelta < WEBGL_DROPPED_DELTA_MAX;
+      return {
+        pass, ran: true, mode: "webgl-relative",
+        worstFrameMs: I.worst, idleWorstMs: B.worst, droppedRatio: I.droppedRatio,
+        frames: I.n + B.n, longTasks: longTasksTotal,
+        detail:
+          `WebGL-relative (GPU-less box software-renders WebGL, so absolute frames are not the app's fault): ` +
+          `idle worst=${B.worst.toFixed(1)}ms → interaction worst=${I.worst.toFixed(1)}ms ` +
+          `(Δ=${worstDelta.toFixed(1)}ms, budget <${WEBGL_INTERACTION_SLACK_MS}ms); ` +
+          `idle dropped=${(B.droppedRatio * 100).toFixed(0)}% → interaction dropped=${(I.droppedRatio * 100).toFixed(0)}% ` +
+          `(Δ=${(droppedDelta * 100).toFixed(0)}pp, budget <${(WEBGL_DROPPED_DELTA_MAX * 100).toFixed(0)}pp); ` +
+          `idle-ceiling ${B.worst.toFixed(0)}<${WEBGL_IDLE_CEILING_MS}ms; ` +
+          `longTasks idle=${idleLongTasks}/interaction=${interLongTasks}${errs}`,
+      };
+    }
+
+    // STRICT budget (non-WebGL apps): the whole sampled run must hold 60fps.
+    const all = phaseStat(deltasRaw.slice(warmup));
+    const pass = all.worst < WORST_FRAME_MAX_MS && all.droppedRatio < DROPPED_RATIO_MAX;
     return {
-      pass,
-      ran: true,
-      worstFrameMs,
-      droppedRatio,
-      frames: deltas.length,
-      longTasks,
+      pass, ran: true, mode: "strict",
+      worstFrameMs: all.worst, idleWorstMs: B.worst, droppedRatio: all.droppedRatio,
+      frames: all.n, longTasks: longTasksTotal,
       detail:
-        `sampled ${deltas.length} frames; worst=${worstFrameMs.toFixed(1)}ms ` +
-        `(budget <${WORST_FRAME_MAX_MS}ms), dropped=${(droppedRatio * 100).toFixed(1)}% ` +
-        `(budget <${(DROPPED_RATIO_MAX * 100).toFixed(0)}%), longTasks=${longTasks}` +
-        (consoleErrors.length ? `; page errors: ${consoleErrors.join(" | ")}` : ""),
+        `strict: sampled ${all.n} frames; worst=${all.worst.toFixed(1)}ms ` +
+        `(budget <${WORST_FRAME_MAX_MS}ms), dropped=${(all.droppedRatio * 100).toFixed(1)}% ` +
+        `(budget <${(DROPPED_RATIO_MAX * 100).toFixed(0)}%), longTasks=${longTasksTotal}${errs}`,
     };
   } catch (e) {
     return fail(`frame-timing harness could not run Chromium: ${(e as Error).message}`);
@@ -295,6 +364,25 @@ export async function frameTimingGate(): Promise<FrameTimingResult> {
 
 // Render the metrics as the "error" text bounced to the Executor's perf-fix mode.
 export function frameTimingErrorText(r: FrameTimingResult): string {
+  // WebGL-relative failure means interaction added jank ON TOP of the steady baseline
+  // — the fix is different from "reduce absolute frame cost" (which is unfixable here).
+  if (r.mode === "webgl-relative") {
+    return (
+      "Frame-timing gate FAILED (WebGL-relative) — INTERACTION adds jank on top of the steady\n" +
+      "wallpaper baseline. The GPU-less test box software-renders WebGL, so the absolute frame\n" +
+      "cost is the environment's, NOT yours — do NOT try to hit a 22ms absolute budget. The\n" +
+      "failure is that scrolling / filtering / paginating makes it MUCH worse than idle:\n" +
+      `  ${r.detail}\n\n` +
+      "The UI code is under workspace/src/client/. Fix the INTERACTION cost specifically:\n" +
+      "  - Do NOT rebuild the whole grid or re-run liquidGL snapshots on every filter/pagination\n" +
+      "    change — update only what changed; use registerDynamic()/syncWith() so the glass tracks\n" +
+      "    moving content without a full re-snapshot.\n" +
+      "  - Debounce filter/search/pagination handlers; never do synchronous layout reads in them.\n" +
+      "  - Animate only transform/opacity; keep the WebGL wallpapers at a fixed rAF cost independent\n" +
+      "    of interaction (they should cost the same idle and under interaction).\n" +
+      "Bring the interaction delta under budget. Do not touch tsconfig.json."
+    );
+  }
   return (
     "Frame-timing gate FAILED — the liquid-glass UI is laggy under interaction.\n" +
     `  worst frame        = ${Number.isFinite(r.worstFrameMs) ? r.worstFrameMs.toFixed(1) + "ms" : "n/a"} ` +
